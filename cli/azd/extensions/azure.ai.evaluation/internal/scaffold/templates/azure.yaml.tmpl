@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: {{.ProjectName}}
+
+infra:
+  provider: bicep
+  path: infra
+
+services:
+  evaluation:
+    host: azure.ai.evaluation
+    project: .
+    script: src/evaluate.py
+    dataset: data/evaluation.jsonl
+    results: results
+    datasetName: {{.ProjectName}}-dataset
+    datasetVersion: auto
+    timeoutSeconds: 3600
+    tracing: true
+    captureContent: false
+    env:
+      FOUNDRY_PROJECT_ENDPOINT: ${FOUNDRY_PROJECT_ENDPOINT}
+      FOUNDRY_MODEL_NAME: ${FOUNDRY_MODEL_NAME}

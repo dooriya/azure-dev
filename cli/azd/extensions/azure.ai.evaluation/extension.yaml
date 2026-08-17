@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../extension.schema.json
+id: azure.ai.evaluation
+namespace: ai.evaluation
+displayName: Microsoft Foundry Evaluation (Preview)
+description: Scaffold and run model evaluations locally or as managed Microsoft Foundry jobs. (Preview)
+usage: azd ai evaluation <command> [options]
+version: 0.1.0-preview
+requiredAzdVersion: ">=1.28.0"
+language: go
+capabilities:
+  - custom-commands
+  - lifecycle-events
+  - service-target-provider
+  - metadata
+providers:
+  - name: azure.ai.evaluation
+    type: service-target
+    description: Runs a scaffolded model evaluation as a managed Microsoft Foundry evaluation job.
+examples:
+  - name: init
+    description: Scaffold a model evaluation project.
+    usage: azd ai evaluation init
+  - name: provision
+    description: Provision the Foundry project, model, and tracing resources.
+    usage: azd ai evaluation provision
+  - name: deploy
+    description: Upload the dataset and run the evaluation in Foundry.
+    usage: azd ai evaluation deploy
+tags:
+  - ai
+  - evaluation
+  - foundry

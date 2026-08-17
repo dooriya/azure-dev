@@ -1,0 +1,24 @@
+import: ../../.vscode/cspell.yaml
+words:
+  - aieval
+  - appinsights
+  - azureai
+  - buildmode
+  - datetime
+  - evals
+  - FOUNDRY
+  - genai
+  - gopath
+  - GOPATH
+  - httpx
+  - Instrumentor
+  - jsonl
+  - modeldeployment
+  - MSYS
+  - opentelemetry
+  - osusergo
+  - pydantic
+  - raisvc
+  - telemetry
+  - testname
+  - trimpath

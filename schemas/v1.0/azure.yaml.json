@@ -438,6 +438,28 @@
                         }
                     },
                     {
+                        "comment": "Microsoft Foundry evaluation host - runs a Python model evaluation locally or as a managed Foundry job",
+                        "if": {
+                            "properties": {
+                                "host": { "const": "azure.ai.evaluation" }
+                            }
+                        },
+                        "then": {
+                            "required": ["project"],
+                            "allOf": [
+                                { "$ref": "https://raw.githubusercontent.com/Azure/azure-dev/main/cli/azd/extensions/azure.ai.evaluation/schemas/azure.ai.evaluation.json" }
+                            ],
+                            "properties": {
+                                "runtime": false,
+                                "docker": false,
+                                "image": false,
+                                "k8s": false,
+                                "apiVersion": false,
+                                "config": false
+                            }
+                        }
+                    },
+                    {
                         "comment": "Azure AI Foundry connection host - code-less resource service; the service key is the connection name",
                         "if": {
                             "properties": {
