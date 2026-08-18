@@ -1,13 +1,17 @@
 import: ../../.vscode/cspell.yaml
 words:
+  - agentsv2
   - aieval
   - appinsights
   - azureai
+  - brownfield
   - buildmode
+  - chatcompletion
   - datetime
   - evals
   - FOUNDRY
   - genai
+  - greenfield
   - gopath
   - GOPATH
   - httpx

@@ -28,27 +28,65 @@ var (
 
 // Options controls project scaffolding.
 type Options struct {
-	ProjectName string
-	Force       bool
+	ProjectName     string
+	ProjectEndpoint string
+	ModelDeployment string
+	Force           bool
+}
+
+// ExistingProject reports whether the scaffold targets an existing Foundry project.
+func (o Options) ExistingProject() bool {
+	return strings.TrimSpace(o.ProjectEndpoint) != ""
 }
 
 type fileDefinition struct {
-	source string
-	target string
-	render bool
+	source   string
+	target   string
+	render   bool
+	preserve bool
 }
 
-var projectFiles = []fileDefinition{
-	{source: "templates/azure.yaml.tmpl", target: "azure.yaml", render: true},
+var commonProjectFiles = []fileDefinition{
 	{source: "templates/gitignore", target: ".gitignore"},
 	{source: "templates/env.example", target: ".env.example"},
 	{source: "templates/README.md", target: "README.md"},
 	{source: "templates/requirements.txt", target: "requirements.txt"},
 	{source: "templates/data/evaluation.jsonl", target: "data/evaluation.jsonl"},
 	{source: "templates/src/evaluate.py", target: "src/evaluate.py"},
-	{source: "templates/infra/main.bicep", target: "infra/main.bicep"},
-	{source: "templates/infra/resources.bicep", target: "infra/resources.bicep"},
-	{source: "templates/infra/main.parameters.json", target: "infra/main.parameters.json"},
+}
+
+func projectFiles(options Options) []fileDefinition {
+	files := make([]fileDefinition, 0, len(commonProjectFiles)+4)
+	if options.ExistingProject() {
+		files = append(files, fileDefinition{
+			source: "templates/azure-existing.yaml.tmpl",
+			target: "azure.yaml",
+			render: true,
+		})
+	} else {
+		files = append(files, fileDefinition{
+			source: "templates/azure.yaml.tmpl",
+			target: "azure.yaml",
+			render: true,
+		})
+	}
+	files = append(files, commonProjectFiles...)
+	if options.ExistingProject() {
+		files = append(files, fileDefinition{
+			source:   "templates/env.tmpl",
+			target:   ".env",
+			render:   true,
+			preserve: true,
+		})
+	}
+	if !options.ExistingProject() {
+		files = append(files,
+			fileDefinition{source: "templates/infra/main.bicep", target: "infra/main.bicep"},
+			fileDefinition{source: "templates/infra/resources.bicep", target: "infra/resources.bicep"},
+			fileDefinition{source: "templates/infra/main.parameters.json", target: "infra/main.parameters.json"},
+		)
+	}
+	return files
 }
 
 // Project creates a model evaluation project under target.
@@ -77,15 +115,21 @@ func Project(target string, options Options) ([]string, error) {
 	}
 	defer root.Close()
 
-	rendered := make(map[string][]byte, len(projectFiles))
+	files := projectFiles(options)
+	rendered := make(map[string][]byte, len(files))
+	preserved := make(map[string]bool)
 	conflicts := make([]string, 0)
-	for _, definition := range projectFiles {
+	for _, definition := range files {
 		outputPath := filepath.Join(target, filepath.FromSlash(definition.target))
 		relativePath := filepath.FromSlash(definition.target)
 		if err := rejectSymlinkComponents(root, relativePath); err != nil {
 			return nil, err
 		}
 		if _, statErr := root.Lstat(relativePath); statErr == nil {
+			if definition.preserve {
+				preserved[definition.target] = true
+				continue
+			}
 			conflicts = append(conflicts, definition.target)
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			return nil, fmt.Errorf("inspecting %s: %w", outputPath, statErr)
@@ -108,8 +152,11 @@ func Project(target string, options Options) ([]string, error) {
 		return nil, fmt.Errorf("%w: %s", errConflict, strings.Join(conflicts, ", "))
 	}
 
-	created := make([]string, 0, len(projectFiles))
-	for _, definition := range projectFiles {
+	created := make([]string, 0, len(files))
+	for _, definition := range files {
+		if preserved[definition.target] {
+			continue
+		}
 		outputPath := filepath.Join(target, filepath.FromSlash(definition.target))
 		relativePath := filepath.FromSlash(definition.target)
 		if err := root.MkdirAll(filepath.Dir(relativePath), 0o750); err != nil {

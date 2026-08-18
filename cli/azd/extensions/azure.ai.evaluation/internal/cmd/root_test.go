@@ -12,7 +12,7 @@ import (
 
 func TestRootCommandHasExpectedCommands(t *testing.T) {
 	root := NewRootCommand()
-	for _, name := range []string{"init", "provision", "deploy", "version", "listen", "metadata"} {
+	for _, name := range []string{"init", "version", "listen", "metadata"} {
 		command, _, err := root.Find([]string{name})
 		require.NoError(t, err)
 		require.Equal(t, name, command.Name())

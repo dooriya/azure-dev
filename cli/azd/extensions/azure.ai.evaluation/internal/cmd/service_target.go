@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
 )
@@ -72,7 +74,21 @@ func (p *evaluationServiceTarget) Endpoints(
 	serviceConfig *azdext.ServiceConfig,
 	targetResource *azdext.TargetResource,
 ) ([]string, error) {
-	return nil, nil
+	files, err := p.resolveServiceFiles(ctx, serviceConfig)
+	if err != nil {
+		return nil, err
+	}
+	result, err := latestEvaluationRunResult(files.results, time.Time{})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if result.ReportURL == "" {
+		return nil, nil
+	}
+	return []string{result.ReportURL}, nil
 }
 
 func (p *evaluationServiceTarget) GetTargetResource(
@@ -138,21 +154,29 @@ func (p *evaluationServiceTarget) Deploy(
 	if progress != nil {
 		progress("Starting managed Foundry evaluation")
 	}
-	if err := p.runEvaluation(ctx, serviceConfig, files); err != nil {
+	result, err := p.runEvaluation(ctx, serviceConfig, files)
+	if err != nil {
 		return nil, err
 	}
 	if progress != nil {
 		progress("Managed Foundry evaluation completed")
 	}
-	return &azdext.ServiceDeployResult{
-		Artifacts: []*azdext.Artifact{
-			{
-				Kind:         azdext.ArtifactKind_ARTIFACT_KIND_DIRECTORY,
-				Location:     files.results,
-				LocationKind: azdext.LocationKind_LOCATION_KIND_LOCAL,
-			},
+	if result.ReportURL == "" {
+		return &azdext.ServiceDeployResult{Artifacts: []*azdext.Artifact{{
+			Kind:         azdext.ArtifactKind_ARTIFACT_KIND_DIRECTORY,
+			Location:     files.results,
+			LocationKind: azdext.LocationKind_LOCATION_KIND_LOCAL,
+		}}}, nil
+	}
+	return &azdext.ServiceDeployResult{Artifacts: []*azdext.Artifact{{
+		Kind:         azdext.ArtifactKind_ARTIFACT_KIND_ENDPOINT,
+		Location:     result.ReportURL,
+		LocationKind: azdext.LocationKind_LOCATION_KIND_REMOTE,
+		Metadata: map[string]string{
+			"label": "Evaluation report",
+			"note":  fmt.Sprintf("Local results: %s", result.ResultPath),
 		},
-	}, nil
+	}}}, nil
 }
 
 type resolvedServiceFiles struct {
@@ -279,10 +303,10 @@ func (p *evaluationServiceTarget) runEvaluation(
 	ctx context.Context,
 	serviceConfig *azdext.ServiceConfig,
 	files *resolvedServiceFiles,
-) error {
+) (*evaluationRunResult, error) {
 	python, err := resolvePython(files.serviceRoot, files.config.Python)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	args := []string{
@@ -306,22 +330,23 @@ func (p *evaluationServiceTarget) runEvaluation(
 
 	environment := mergeEnvironment(os.Environ(), serviceConfig.GetEnvironment())
 	if environmentValue(environment, "FOUNDRY_PROJECT_ENDPOINT", "AZURE_AI_PROJECT_ENDPOINT") == "" {
-		return &azdext.LocalError{
+		return nil, &azdext.LocalError{
 			Message:    "Foundry project endpoint is not configured.",
 			Code:       "evaluation_project_endpoint_missing",
 			Category:   azdext.LocalErrorCategoryDependency,
-			Suggestion: "Run 'azd ai evaluation provision', or set FOUNDRY_PROJECT_ENDPOINT in the active azd environment.",
+			Suggestion: "Run 'azd provision', or set FOUNDRY_PROJECT_ENDPOINT in the active azd environment.",
 		}
 	}
 	if environmentValue(environment, "FOUNDRY_MODEL_NAME", "AZURE_AI_MODEL_DEPLOYMENT_NAME") == "" {
-		return &azdext.LocalError{
+		return nil, &azdext.LocalError{
 			Message:    "Foundry model deployment is not configured.",
 			Code:       "evaluation_model_deployment_missing",
 			Category:   azdext.LocalErrorCategoryDependency,
-			Suggestion: "Run 'azd ai evaluation provision', or set FOUNDRY_MODEL_NAME in the active azd environment.",
+			Suggestion: "Run 'azd provision', or set FOUNDRY_MODEL_NAME in the active azd environment.",
 		}
 	}
 
+	startedAt := time.Now()
 	err = p.runner.Run(ctx, processSpec{
 		executable:  python,
 		args:        args,
@@ -329,7 +354,7 @@ func (p *evaluationServiceTarget) runEvaluation(
 		environment: environment,
 	})
 	if err != nil {
-		return &azdext.LocalError{
+		return nil, &azdext.LocalError{
 			Message:  fmt.Sprintf("Managed evaluation failed: %s", err),
 			Code:     "evaluation_remote_run_failed",
 			Category: azdext.LocalErrorCategoryDependency,
@@ -337,7 +362,96 @@ func (p *evaluationServiceTarget) runEvaluation(
 				"Use datasetVersion: auto or choose an unused explicit version.",
 		}
 	}
-	return nil
+	result, err := latestEvaluationRunResult(files.results, startedAt)
+	if err != nil {
+		return nil, &azdext.LocalError{
+			Message:    fmt.Sprintf("Managed evaluation completed without a readable result: %s", err),
+			Code:       "evaluation_result_missing",
+			Category:   azdext.LocalErrorCategoryInternal,
+			Suggestion: "Inspect the results directory and retry the deployment.",
+		}
+	}
+	if result.ReportURL == "" && !files.config.NoWait {
+		return nil, &azdext.LocalError{
+			Message:    "Managed evaluation result did not include a Foundry report URL.",
+			Code:       "evaluation_report_url_missing",
+			Category:   azdext.LocalErrorCategoryInternal,
+			Suggestion: "Inspect the local result JSON and retry the deployment.",
+		}
+	}
+	return result, nil
+}
+
+type evaluationRunResult struct {
+	ReportURL  string
+	ResultPath string
+}
+
+func latestEvaluationRunResult(resultsDir string, startedAt time.Time) (*evaluationRunResult, error) {
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var latestPath string
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() ||
+			!strings.HasPrefix(entry.Name(), "remote-") ||
+			filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("reading evaluation result metadata: %w", err)
+		}
+		if !startedAt.IsZero() && info.ModTime().Before(startedAt.Add(-time.Second)) {
+			continue
+		}
+		if latestPath == "" || info.ModTime().After(latestTime) {
+			latestPath = filepath.Join(resultsDir, entry.Name())
+			latestTime = info.ModTime()
+		}
+	}
+	if latestPath == "" {
+		return nil, os.ErrNotExist
+	}
+
+	// The result is generated by the scaffolded evaluation script.
+	content, err := os.ReadFile(latestPath) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("reading evaluation result: %w", err)
+	}
+	var document struct {
+		Run struct {
+			ReportURL string `json:"report_url"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(content, &document); err != nil {
+		return nil, fmt.Errorf("parsing evaluation result: %w", err)
+	}
+	reportURL, err := validateEvaluationReportURL(document.Run.ReportURL)
+	if err != nil {
+		return nil, err
+	}
+	return &evaluationRunResult{
+		ReportURL:  reportURL,
+		ResultPath: latestPath,
+	}, nil
+}
+
+func validateEvaluationReportURL(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("parsing Foundry report URL: %w", err)
+	}
+	if parsed.Scheme != "https" || parsed.Host == "" {
+		return "", fmt.Errorf("Foundry report URL must use HTTPS")
+	}
+	return parsed.String(), nil
 }
 
 func resolvePython(serviceRoot, configured string) (string, error) {

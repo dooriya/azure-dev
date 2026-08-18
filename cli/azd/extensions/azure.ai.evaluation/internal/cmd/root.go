@@ -22,9 +22,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 	rootCmd.SetHelpCommand(&cobra.Command{Hidden: true})
 
-	rootCmd.AddCommand(newInitCommand())
-	rootCmd.AddCommand(newProvisionCommand(extCtx))
-	rootCmd.AddCommand(newDeployCommand())
+	rootCmd.AddCommand(newInitCommand(extCtx))
 	rootCmd.AddCommand(newVersionCommand())
 	rootCmd.AddCommand(azdext.NewListenCommand(configureExtensionHost))
 	rootCmd.AddCommand(azdext.NewMetadataCommand("1.0", "azure.ai.evaluation", func() *cobra.Command {

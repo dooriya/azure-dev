@@ -13,7 +13,7 @@ This project runs the same model and dataset in two modes:
 - Python 3.10 or later.
 - Azure Developer CLI (`azd`) authenticated with `azd auth login`.
 - Owner, or Contributor together with User Access Administrator, when
-  provisioning the scaffold because it creates Azure role assignments.
+  provisioning a new project because that path creates Azure role assignments.
 - For an existing project, the **Foundry User** role and an Application
   Insights connection when tracing remains enabled.
 
@@ -29,25 +29,33 @@ Activate the virtual environment, then run:
 python -m pip install -r requirements.txt
 ```
 
-For local execution against an existing Foundry project, create `.env` from the
-generated example and replace both placeholders:
+For an existing Foundry project, init writes selected values to the gitignored
+`.env` file so local execution works immediately. `.env.example` remains a
+reusable placeholder template and is never populated with project-specific
+values.
 
-```powershell
-Copy-Item .env.example .env
-```
+## Foundry project lifecycle
 
-## Provision a Foundry project
+Interactive `azd ai evaluation init` selects an existing Foundry project and
+model deployment by default. In that mode, `azd provision` reuses the project
+and only refreshes environment outputs:
 
 ```shell
-azd auth login
-azd env new
-azd ai evaluation provision --preview
-azd ai evaluation provision
+azd provision
 ```
 
-The Bicep template creates a Foundry account and project, a model deployment,
-Log Analytics, Application Insights, and the project connections and role
-assignments required for traces.
+When init is run with `--new-project`, the generated Bicep creates a Foundry
+account and project, model deployment, Log Analytics, Application Insights,
+connections, and required role assignments:
+
+```shell
+azd provision --preview
+azd provision
+```
+
+When running from an AI-agent terminal, azd automatically enables no-prompt
+mode. Use `azd provision --no-prompt=false` to explicitly enable subscription
+and location prompts.
 
 To change the default model before provisioning:
 
@@ -59,20 +67,20 @@ azd env set AZURE_AI_MODEL_SKU GlobalStandard
 azd env set AZURE_AI_MODEL_CAPACITY 10
 ```
 
-## Use an existing Foundry project
+## Non-interactive existing project setup
 
-Skip provisioning and configure an azd environment:
+Provide the project ARM ID and deployed model name:
 
 ```shell
-azd env new
-azd env set FOUNDRY_PROJECT_ENDPOINT "https://<account>.services.ai.azure.com/api/projects/<project>"
-azd env set FOUNDRY_MODEL_NAME "<deployment-name>"
+azd ai evaluation init --no-prompt \
+  --project-id "/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>" \
+  --model-deployment "<deployment-name>"
 ```
 
 ## Run locally
 
-For an existing project, populate `.env` from `.env.example`. After provisioning
-with azd, you can instead export the active azd environment. Then run:
+For an existing project, init has already populated `.env`. After provisioning
+a new project, export the active azd environment. Then run:
 
 ```powershell
 azd env get-values > .env
@@ -84,7 +92,7 @@ Local results are written under `results/`.
 ## Run in Foundry
 
 ```shell
-azd ai evaluation deploy
+azd deploy
 ```
 
 You can also use the standard lifecycle:
@@ -95,17 +103,17 @@ azd up
 
 The remote run uploads `data/evaluation.jsonl`, creates a managed evaluation,
 waits for completion, writes the run and output items under `results/`, and
-prints the Foundry report URL.
+returns a clickable **Evaluation report** URL plus the local JSON result path in
+the `azd deploy` output.
 
 `datasetVersion: auto` in `azure.yaml` creates a timestamped dataset version on
 each deployment. Set an explicit version when you want deployments to reference
 a fixed registered dataset.
 
-Remote tracing is enabled by default. The provisioned Application Insights
-connection makes server-side trace propagation available, while the Python
-client always instruments submission and polling. Foundry controls whether
-managed model-target spans are emitted. Prompt and response content capture is
-disabled unless you explicitly pass `--capture-content`.
+Remote tracing is enabled when the selected project has Application Insights
+connected. Otherwise evaluation continues with a warning and no client trace
+export. Prompt and response content capture is disabled unless you explicitly
+pass `--capture-content`.
 
 ## Dataset shape
 

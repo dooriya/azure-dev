@@ -19,10 +19,11 @@ const evaluationServiceHostForTest = "azure.ai.evaluation"
 
 func TestProjectCreatesRunnableScaffold(t *testing.T) {
 	target := t.TempDir()
+	options := Options{ProjectName: "sample-evaluation"}
 
-	files, err := Project(target, Options{ProjectName: "sample-evaluation"})
+	files, err := Project(target, options)
 	require.NoError(t, err)
-	require.Len(t, files, len(projectFiles))
+	require.Len(t, files, len(projectFiles(options)))
 
 	azureYAML, err := os.ReadFile(filepath.Join(target, "azure.yaml")) //nolint:gosec
 	require.NoError(t, err)
@@ -86,6 +87,53 @@ func TestProjectCreatesRunnableScaffold(t *testing.T) {
 	require.Equal(t, 2, rows)
 }
 
+func TestProjectCreatesExistingProjectScaffold(t *testing.T) {
+	target := t.TempDir()
+	options := Options{
+		ProjectName:     "existing-evaluation",
+		ProjectEndpoint: "https://account.services.ai.azure.com/api/projects/project",
+		ModelDeployment: "gpt-5-1",
+	}
+
+	files, err := Project(target, options)
+	require.NoError(t, err)
+	require.Len(t, files, len(projectFiles(options)))
+
+	azureYAML, err := os.ReadFile(filepath.Join(target, "azure.yaml")) //nolint:gosec
+	require.NoError(t, err)
+	var project struct {
+		Infra struct {
+			Provider string `yaml:"provider"`
+			Path     string `yaml:"path"`
+		} `yaml:"infra"`
+		Services map[string]struct {
+			Host     string   `yaml:"host"`
+			Endpoint string   `yaml:"endpoint"`
+			Uses     []string `yaml:"uses"`
+		} `yaml:"services"`
+	}
+	require.NoError(t, yaml.Unmarshal(azureYAML, &project))
+	assert.Equal(t, "microsoft.foundry", project.Infra.Provider)
+	assert.Empty(t, project.Infra.Path)
+	assert.Equal(t, "azure.ai.project", project.Services["ai-project"].Host)
+	assert.Equal(t, options.ProjectEndpoint, project.Services["ai-project"].Endpoint)
+	assert.Equal(t, []string{"ai-project"}, project.Services["evaluation"].Uses)
+
+	envExample, err := os.ReadFile(filepath.Join(target, ".env.example")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Contains(t, string(envExample), "FOUNDRY_PROJECT_ENDPOINT=https://<account-name>")
+	assert.Contains(t, string(envExample), "FOUNDRY_MODEL_NAME=<model-deployment-name>")
+	assert.NotContains(t, string(envExample), options.ProjectEndpoint)
+
+	localEnv, err := os.ReadFile(filepath.Join(target, ".env")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Contains(t, string(localEnv), "FOUNDRY_PROJECT_ENDPOINT="+options.ProjectEndpoint)
+	assert.Contains(t, string(localEnv), "FOUNDRY_MODEL_NAME="+options.ModelDeployment)
+
+	_, err = os.Stat(filepath.Join(target, "infra", "main.bicep"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestProjectDoesNotOverwriteWithoutForce(t *testing.T) {
 	target := t.TempDir()
 	_, err := Project(target, Options{ProjectName: "sample-evaluation"})
@@ -121,6 +169,28 @@ func TestProjectForceOnlyOverwritesManagedFiles(t *testing.T) {
 	content, err := os.ReadFile(unmanaged) //nolint:gosec
 	require.NoError(t, err)
 	require.Equal(t, "keep\n", string(content))
+}
+
+func TestProjectForcePreservesExistingLocalEnv(t *testing.T) {
+	target := t.TempDir()
+	options := Options{
+		ProjectName:     "existing-evaluation",
+		ProjectEndpoint: "https://account.services.ai.azure.com/api/projects/project",
+		ModelDeployment: "gpt-5-1",
+	}
+	_, err := Project(target, options)
+	require.NoError(t, err)
+
+	localEnv := filepath.Join(target, ".env")
+	require.NoError(t, os.WriteFile(localEnv, []byte("CUSTOM=value\n"), 0o600))
+	options.ModelDeployment = "different-deployment"
+	options.Force = true
+	_, err = Project(target, options)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(localEnv) //nolint:gosec
+	require.NoError(t, err)
+	require.Equal(t, "CUSTOM=value\n", string(content))
 }
 
 func TestProjectRejectsSymlinkedManagedPaths(t *testing.T) {

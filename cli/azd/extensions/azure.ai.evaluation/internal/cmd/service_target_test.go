@@ -79,7 +79,15 @@ func TestRunEvaluationBuildsRemoteCommand(t *testing.T) {
 		t.Skipf("test executable unavailable: %v", err)
 	}
 
-	runner := &recordingProcessRunner{}
+	resultsDir := filepath.Join(root, "results")
+	runner := &recordingProcessRunner{onRun: func(processSpec) error {
+		require.NoError(t, os.MkdirAll(resultsDir, 0o750))
+		return os.WriteFile(
+			filepath.Join(resultsDir, "remote-run.json"),
+			[]byte(`{"run":{"report_url":"https://ai.azure.com/report"}}`),
+			0o600,
+		)
+	}}
 	target := &evaluationServiceTarget{runner: runner}
 	tracing := true
 	files := &resolvedServiceFiles{
@@ -93,16 +101,18 @@ func TestRunEvaluationBuildsRemoteCommand(t *testing.T) {
 		serviceRoot: root,
 		script:      filepath.Join(root, "src", "evaluate.py"),
 		dataset:     filepath.Join(root, "data", "evaluation.jsonl"),
-		results:     filepath.Join(root, "results"),
+		results:     resultsDir,
 	}
 
-	err := target.runEvaluation(t.Context(), &azdext.ServiceConfig{
+	result, err := target.runEvaluation(t.Context(), &azdext.ServiceConfig{
 		Environment: map[string]string{
 			"FOUNDRY_PROJECT_ENDPOINT": "https://example.services.ai.azure.com/api/projects/sample",
 			"FOUNDRY_MODEL_NAME":       "model",
 		},
 	}, files)
 	require.NoError(t, err)
+	assert.Equal(t, "https://ai.azure.com/report", result.ReportURL)
+	assert.Equal(t, filepath.Join(resultsDir, "remote-run.json"), result.ResultPath)
 	require.Len(t, runner.specs, 1)
 
 	spec := runner.specs[0]
@@ -140,7 +150,7 @@ func TestRunEvaluationRequiresEndpointAndModel(t *testing.T) {
 	t.Setenv("FOUNDRY_MODEL_NAME", "")
 	t.Setenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "")
 
-	err := target.runEvaluation(t.Context(), &azdext.ServiceConfig{}, files)
+	_, err := target.runEvaluation(t.Context(), &azdext.ServiceConfig{}, files)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "endpoint")
 }
@@ -172,9 +182,13 @@ func TestMergeEnvironmentSkipsEmptyOverrides(t *testing.T) {
 type recordingProcessRunner struct {
 	specs []processSpec
 	err   error
+	onRun func(processSpec) error
 }
 
 func (r *recordingProcessRunner) Run(ctx context.Context, spec processSpec) error {
 	r.specs = append(r.specs, spec)
+	if r.onRun != nil {
+		return r.onRun(spec)
+	}
 	return r.err
 }

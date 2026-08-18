@@ -175,12 +175,16 @@ def configure_remote_tracing(project_client: AIProjectClient, capture_content: b
     from azure.monitor.opentelemetry import configure_azure_monitor
     from opentelemetry import trace
 
-    connection_string = project_client.telemetry.get_application_insights_connection_string()
+    try:
+        connection_string = project_client.telemetry.get_application_insights_connection_string()
+    except ResourceNotFoundError:
+        connection_string = None
     if not connection_string:
-        raise RuntimeError(
-            "The Foundry project is not connected to Application Insights. "
-            "Provision this scaffold or connect Application Insights before using remote tracing."
+        print(
+            "Warning: The Foundry project is not connected to Application Insights; "
+            "continuing without client trace export."
         )
+        return None
     configure_azure_monitor(connection_string=connection_string)
     AIProjectInstrumentor().instrument(enable_content_recording=capture_content)
     return trace.get_tracer("azd.evaluation")
@@ -299,6 +303,7 @@ def run_remote(args: argparse.Namespace, endpoint: str, model: str) -> Path:
         tracer = None
         if not args.no_tracing:
             tracer = configure_remote_tracing(project_client, args.capture_content)
+        tracing_enabled = tracer is not None
 
         span_context = (
             tracer.start_as_current_span("model-evaluation.remote")
@@ -377,8 +382,8 @@ def run_remote(args: argparse.Namespace, endpoint: str, model: str) -> Path:
                         f"remote-{run.id}",
                         {
                             "mode": "remote",
-                            "tracing_enabled": not args.no_tracing,
-                            "content_capture_enabled": args.capture_content,
+                            "tracing_enabled": tracing_enabled,
+                            "content_capture_enabled": tracing_enabled and args.capture_content,
                             "evaluation_id": evaluation.id,
                             "run": run,
                         },
@@ -413,8 +418,8 @@ def run_remote(args: argparse.Namespace, endpoint: str, model: str) -> Path:
                     f"remote-{run.id}",
                     {
                         "mode": "remote",
-                        "tracing_enabled": not args.no_tracing,
-                        "content_capture_enabled": args.capture_content,
+                        "tracing_enabled": tracing_enabled,
+                        "content_capture_enabled": tracing_enabled and args.capture_content,
                         "evaluation_id": evaluation.id,
                         "run": run,
                         "output_items": output_items,
