@@ -29,7 +29,7 @@ func TestProjectCreatesRunnableScaffold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(azureYAML), "name: sample-evaluation")
 	assert.Contains(t, string(azureYAML), "host: azure.ai.evaluation")
-	assert.Contains(t, string(azureYAML), "datasetName: sample-evaluation-dataset")
+	assert.Contains(t, string(azureYAML), "configFile: evaluation.yaml")
 
 	var project struct {
 		Name  string `yaml:"name"`
@@ -38,11 +38,9 @@ func TestProjectCreatesRunnableScaffold(t *testing.T) {
 			Path     string `yaml:"path"`
 		} `yaml:"infra"`
 		Services map[string]struct {
-			Host        string `yaml:"host"`
-			Project     string `yaml:"project"`
-			Script      string `yaml:"script"`
-			Dataset     string `yaml:"dataset"`
-			DatasetName string `yaml:"datasetName"`
+			Host       string `yaml:"host"`
+			Project    string `yaml:"project"`
+			ConfigFile string `yaml:"configFile"`
 		} `yaml:"services"`
 	}
 	require.NoError(t, yaml.Unmarshal(azureYAML, &project))
@@ -52,9 +50,13 @@ func TestProjectCreatesRunnableScaffold(t *testing.T) {
 	require.Contains(t, project.Services, "evaluation")
 	assert.Equal(t, evaluationServiceHostForTest, project.Services["evaluation"].Host)
 	assert.Equal(t, ".", project.Services["evaluation"].Project)
-	assert.Equal(t, "src/evaluate.py", project.Services["evaluation"].Script)
-	assert.Equal(t, "data/evaluation.jsonl", project.Services["evaluation"].Dataset)
-	assert.Equal(t, "sample-evaluation-dataset", project.Services["evaluation"].DatasetName)
+	assert.Equal(t, "evaluation.yaml", project.Services["evaluation"].ConfigFile)
+
+	evaluationYAML, err := os.ReadFile(filepath.Join(target, "evaluation.yaml")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Contains(t, string(evaluationYAML), "profile: starter")
+	assert.Contains(t, string(evaluationYAML), "FOUNDRY_JUDGE_MODEL_NAME")
+	assert.Contains(t, string(evaluationYAML), "minPassRate: 0.8")
 
 	python, err := os.ReadFile(filepath.Join(target, "src", "evaluate.py")) //nolint:gosec
 	require.NoError(t, err)
@@ -84,7 +86,7 @@ func TestProjectCreatesRunnableScaffold(t *testing.T) {
 		rows++
 	}
 	require.NoError(t, scanner.Err())
-	require.Equal(t, 2, rows)
+	require.Equal(t, 4, rows)
 }
 
 func TestProjectCreatesExistingProjectScaffold(t *testing.T) {
@@ -93,6 +95,7 @@ func TestProjectCreatesExistingProjectScaffold(t *testing.T) {
 		ProjectName:     "existing-evaluation",
 		ProjectEndpoint: "https://account.services.ai.azure.com/api/projects/project",
 		ModelDeployment: "gpt-5-1",
+		JudgeDeployment: "gpt-5-mini",
 	}
 
 	files, err := Project(target, options)
@@ -129,6 +132,7 @@ func TestProjectCreatesExistingProjectScaffold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(localEnv), "FOUNDRY_PROJECT_ENDPOINT="+options.ProjectEndpoint)
 	assert.Contains(t, string(localEnv), "FOUNDRY_MODEL_NAME="+options.ModelDeployment)
+	assert.Contains(t, string(localEnv), "FOUNDRY_JUDGE_MODEL_NAME="+options.JudgeDeployment)
 
 	_, err = os.Stat(filepath.Join(target, "infra", "main.bicep"))
 	require.ErrorIs(t, err, os.ErrNotExist)

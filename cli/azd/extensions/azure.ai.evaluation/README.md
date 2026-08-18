@@ -17,30 +17,35 @@ azd deploy
 - `azure.yaml` with an `azure.ai.evaluation` service.
 - For `--new-project`, Bicep infrastructure for a Foundry project, model
   deployment, Application Insights, and Log Analytics.
-- Python code for local and server-side model evaluation.
+- Python code for local model evaluation.
 - A starter JSONL dataset.
+- `evaluation.yaml` for target/judge models, field mappings, evaluators,
+  thresholds, sampling, remote options, and quality gates.
 - `.env.example` with reusable placeholders.
 - For an existing project, a gitignored `.env` containing the selected endpoint
   and deployment so local Python works immediately.
 
 Interactive init defaults to an existing Foundry project, matching
-`azd ai agent init`. It selects a subscription, project, and deployed model,
-creates an azd environment, and authors an `azure.ai.project` brownfield service.
-Use `--new-project` to scaffold greenfield Bicep instead.
+`azd ai agent init`. It selects a subscription, project, target model deployment,
+and judge model deployment. The target generates responses to evaluate; the
+judge scores those responses for AI-assisted evaluators. The judge picker
+preselects the target so you can reuse it or choose a different deployment.
+Init then creates an azd environment and authors an `azure.ai.project`
+brownfield service. Use `--new-project` to scaffold greenfield Bicep instead.
 
 Core azd owns provisioning and deployment. For an existing project,
 `azd provision` reuses the project without creating RBAC assignments. During
 `azd deploy` or `azd up`, the extension's `azure.ai.evaluation` service target
-runs the generated Python with `--remote`, uploads the dataset, creates the
-evaluation definition, starts a managed run, and waits for its result. The
-deploy result includes a clickable **Evaluation report** URL and the local JSON
-result path.
+uses Foundry APIs directly to upload the dataset, create the evaluation
+definition, start a managed run, and wait for its result. Python is not required
+for `azd provision` or `azd deploy`. The deploy result includes a clickable
+**Evaluation report** URL, the local JSON result path, per-evaluator pass rates,
+and the quality gate result.
 
 The generated infrastructure connects Application Insights to the Foundry
-project. The remote Python flow also enables OpenTelemetry instrumentation.
-Foundry controls emission of managed model-target spans. Existing projects
-without Application Insights continue evaluation with a warning and no client
-trace export. Message content capture remains disabled by default.
+project. Foundry controls emission of managed model-target spans. Existing
+projects without Application Insights can still run evaluations, but managed
+traces are not exported.
 
 Provisioning creates Azure role assignments. The deploying identity therefore
 needs Owner, or Contributor together with User Access Administrator, on the

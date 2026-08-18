@@ -10,14 +10,8 @@ services:
   evaluation:
     host: azure.ai.evaluation
     project: .
-    script: src/evaluate.py
-    dataset: data/evaluation.jsonl
-    results: results
-    datasetName: {{.ProjectName}}-dataset
-    datasetVersion: auto
-    timeoutSeconds: 3600
-    tracing: true
-    captureContent: false
+    configFile: evaluation.yaml
     env:
       FOUNDRY_PROJECT_ENDPOINT: ${FOUNDRY_PROJECT_ENDPOINT}
       FOUNDRY_MODEL_NAME: ${FOUNDRY_MODEL_NAME}
+      FOUNDRY_JUDGE_MODEL_NAME: ${FOUNDRY_JUDGE_MODEL_NAME}

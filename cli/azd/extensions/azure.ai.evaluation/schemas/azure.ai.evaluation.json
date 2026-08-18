@@ -6,63 +6,14 @@
   "type": "object",
   "additionalProperties": true,
   "required": [
-    "script",
-    "dataset"
+    "configFile"
   ],
   "properties": {
-    "script": {
+    "configFile": {
       "type": "string",
       "minLength": 1,
-      "description": "Python entry point, relative to the service project directory."
-    },
-    "dataset": {
-      "type": "string",
-      "minLength": 1,
-      "description": "JSONL evaluation dataset, relative to the service project directory."
-    },
-    "results": {
-      "type": "string",
-      "minLength": 1,
-      "default": "results",
-      "description": "Directory where local copies of evaluation results are written."
-    },
-    "datasetName": {
-      "type": "string",
-      "minLength": 1,
-      "default": "model-evaluation",
-      "description": "Name used when registering the dataset in Foundry."
-    },
-    "datasetVersion": {
-      "type": "string",
-      "minLength": 1,
-      "default": "auto",
-      "description": "Version used when registering the dataset in Foundry. 'auto' creates a timestamped version for each deployment."
-    },
-    "python": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Optional Python executable. The service prefers .venv when omitted."
-    },
-    "timeoutSeconds": {
-      "type": "integer",
-      "minimum": 1,
-      "default": 3600,
-      "description": "Maximum time to wait for a managed evaluation run."
-    },
-    "noWait": {
-      "type": "boolean",
-      "default": false,
-      "description": "Submit the managed evaluation and return without polling."
-    },
-    "tracing": {
-      "type": "boolean",
-      "default": true,
-      "description": "Enable OpenTelemetry for remote submission and require a connected Application Insights resource."
-    },
-    "captureContent": {
-      "type": "boolean",
-      "default": false,
-      "description": "Include model messages in traces. Leave disabled unless privacy requirements permit content capture."
+      "default": "evaluation.yaml",
+      "description": "Evaluation YAML configuration, relative to the service project directory."
     }
   }
 }

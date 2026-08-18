@@ -19,6 +19,9 @@ This project runs the same model and dataset in two modes:
 
 ## Install Python dependencies
 
+Python is needed only for local evaluation. `azd provision` and `azd deploy`
+do not require Python or a virtual environment.
+
 ```shell
 python -m venv .venv
 ```
@@ -37,8 +40,11 @@ values.
 ## Foundry project lifecycle
 
 Interactive `azd ai evaluation init` selects an existing Foundry project and
-model deployment by default. In that mode, `azd provision` reuses the project
-and only refreshes environment outputs:
+two model deployments by default. The target model generates responses to
+evaluate. The judge model scores those responses for AI-assisted evaluators;
+its picker preselects the target so you can reuse it or choose a different
+deployment. In this mode, `azd provision` reuses the project and only refreshes
+environment outputs:
 
 ```shell
 azd provision
@@ -89,6 +95,22 @@ python src/evaluate.py --local
 
 Local results are written under `results/`.
 
+## Customize datasets and evaluators
+
+Edit `evaluation.yaml` to customize:
+
+- `dataset.path`, registration name/version, and query/ground-truth field names.
+- `target.model` and the separate `judge.model`.
+- Evaluator IDs, names, thresholds, direction, and optional `dataMapping`.
+- Target sampling parameters.
+- Report-only or enforced `qualityGate` pass/error rates.
+- Remote polling, wait behavior, and output location.
+
+The starter profile uses relevance, coherence, and F1. F1 is a lexical baseline
+and can fail correct paraphrases; use the Foundry report and AI-assisted
+evaluators when assessing semantic quality. Custom catalog evaluators and
+preview scenarios are intentionally not scaffolded by default.
+
 ## Run in Foundry
 
 ```shell
@@ -106,14 +128,12 @@ waits for completion, writes the run and output items under `results/`, and
 returns a clickable **Evaluation report** URL plus the local JSON result path in
 the `azd deploy` output.
 
-`datasetVersion: auto` in `azure.yaml` creates a timestamped dataset version on
-each deployment. Set an explicit version when you want deployments to reference
-a fixed registered dataset.
+`dataset.version: auto` in `evaluation.yaml` creates a timestamped dataset
+version on each deployment. Set an explicit version when you want deployments
+to reference a fixed registered dataset.
 
-Remote tracing is enabled when the selected project has Application Insights
-connected. Otherwise evaluation continues with a warning and no client trace
-export. Prompt and response content capture is disabled unless you explicitly
-pass `--capture-content`.
+Managed traces are exported when the selected Foundry project has Application
+Insights connected. Evaluation still runs when Application Insights is absent.
 
 ## Dataset shape
 

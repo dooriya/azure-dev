@@ -5,8 +5,6 @@ package cmd
 
 import (
 	"context"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -16,29 +14,9 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func TestParseEvaluationServiceConfigDefaults(t *testing.T) {
-	config, err := parseEvaluationServiceConfig(&azdext.ServiceConfig{Name: "evaluation"})
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join("src", "evaluate.py"), config.Script)
-	assert.Equal(t, filepath.Join("data", "evaluation.jsonl"), config.Dataset)
-	assert.Equal(t, "auto", config.DatasetVersion)
-	assert.Equal(t, 3600, config.TimeoutSeconds)
-	require.NotNil(t, config.Tracing)
-	assert.True(t, *config.Tracing)
-}
-
-func TestParseEvaluationServiceConfigOverrides(t *testing.T) {
+func TestParseEvaluationServiceConfig(t *testing.T) {
 	properties, err := structpb.NewStruct(map[string]any{
-		"script":         "evaluate.py",
-		"dataset":        "input.jsonl",
-		"results":        "output",
-		"datasetName":    "sample",
-		"datasetVersion": "2",
-		"python":         "custom-python",
-		"timeoutSeconds": 42,
-		"noWait":         true,
-		"tracing":        false,
-		"captureContent": true,
+		"configFile": "custom-evaluation.yaml",
 	})
 	require.NoError(t, err)
 
@@ -47,21 +25,11 @@ func TestParseEvaluationServiceConfigOverrides(t *testing.T) {
 		AdditionalProperties: properties,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "evaluate.py", config.Script)
-	assert.Equal(t, "input.jsonl", config.Dataset)
-	assert.Equal(t, "output", config.Results)
-	assert.Equal(t, "sample", config.DatasetName)
-	assert.Equal(t, "2", config.DatasetVersion)
-	assert.Equal(t, "custom-python", config.Python)
-	assert.Equal(t, 42, config.TimeoutSeconds)
-	assert.True(t, config.NoWait)
-	require.NotNil(t, config.Tracing)
-	assert.False(t, *config.Tracing)
-	assert.True(t, config.CaptureContent)
+	assert.Equal(t, "custom-evaluation.yaml", config.ConfigFile)
 }
 
-func TestParseEvaluationServiceConfigRejectsInvalidValues(t *testing.T) {
-	properties, err := structpb.NewStruct(map[string]any{"timeoutSeconds": 0})
+func TestParseEvaluationServiceConfigRejectsMissingConfigFile(t *testing.T) {
+	properties, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
 
 	_, err = parseEvaluationServiceConfig(&azdext.ServiceConfig{
@@ -69,39 +37,35 @@ func TestParseEvaluationServiceConfigRejectsInvalidValues(t *testing.T) {
 		AdditionalProperties: properties,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "timeoutSeconds")
+	assert.Contains(t, err.Error(), "configFile")
 }
 
-func TestRunEvaluationBuildsRemoteCommand(t *testing.T) {
+func TestRunEvaluationUsesManagedRunner(t *testing.T) {
 	root := t.TempDir()
-	pythonName := "go"
-	if _, err := resolvePython(root, pythonName); err != nil {
-		t.Skipf("test executable unavailable: %v", err)
-	}
-
-	resultsDir := filepath.Join(root, "results")
-	runner := &recordingProcessRunner{onRun: func(processSpec) error {
-		require.NoError(t, os.MkdirAll(resultsDir, 0o750))
-		return os.WriteFile(
-			filepath.Join(resultsDir, "remote-run.json"),
-			[]byte(`{"run":{"report_url":"https://ai.azure.com/report"}}`),
-			0o600,
-		)
-	}}
-	target := &evaluationServiceTarget{runner: runner}
-	tracing := true
-	files := &resolvedServiceFiles{
-		config: evaluationServiceConfig{
-			Python:         pythonName,
-			DatasetName:    "sample",
-			DatasetVersion: "3",
-			TimeoutSeconds: 90,
-			Tracing:        &tracing,
+	outputDir := filepath.Join(root, "results")
+	resultMetadata := filepath.Join(outputDir, ".azd-deploy-result-evaluation.json")
+	resultPath := filepath.Join(outputDir, "remote-run.json")
+	var received managedEvaluationOptions
+	target := &evaluationServiceTarget{
+		managedRunner: func(
+			_ context.Context,
+			options managedEvaluationOptions,
+		) (*evaluationRunResult, error) {
+			received = options
+			return &evaluationRunResult{
+				State:       evaluationResultStateCompleted,
+				ReportURL:   "https://ai.azure.com/report",
+				ResultPath:  resultPath,
+				SummaryText: "Evaluation summary:\n  relevance: 1/1 passed",
+			}, nil
 		},
-		serviceRoot: root,
-		script:      filepath.Join(root, "src", "evaluate.py"),
-		dataset:     filepath.Join(root, "data", "evaluation.jsonl"),
-		results:     resultsDir,
+	}
+	files := &resolvedServiceFiles{
+		configFile:     filepath.Join(root, "evaluation.yaml"),
+		evaluation:     &evaluationConfig{},
+		dataset:        filepath.Join(root, "data", "evaluation.jsonl"),
+		output:         outputDir,
+		resultMetadata: resultMetadata,
 	}
 
 	result, err := target.runEvaluation(t.Context(), &azdext.ServiceConfig{
@@ -112,62 +76,45 @@ func TestRunEvaluationBuildsRemoteCommand(t *testing.T) {
 	}, files)
 	require.NoError(t, err)
 	assert.Equal(t, "https://ai.azure.com/report", result.ReportURL)
-	assert.Equal(t, filepath.Join(resultsDir, "remote-run.json"), result.ResultPath)
-	require.Len(t, runner.specs, 1)
-
-	spec := runner.specs[0]
-	assert.Equal(t, root, spec.directory)
-	assert.Contains(t, spec.args, "--remote")
-	assert.Contains(t, spec.args, "--dataset-name")
-	assert.Contains(t, spec.args, "sample")
-	assert.Contains(t, spec.args, "--dataset-version")
-	assert.Contains(t, spec.args, "3")
-	assert.Equal(t, "model", environmentValue(spec.environment, "FOUNDRY_MODEL_NAME"))
+	assert.Equal(t, resultPath, result.ResultPath)
+	assert.Contains(t, evaluationArtifactNote(result), "relevance: 1/1 passed")
+	assert.Same(t, files.evaluation, received.Config)
+	assert.Equal(t, files.dataset, received.DatasetPath)
+	assert.Equal(t, files.output, received.OutputPath)
+	assert.Equal(t, files.resultMetadata, received.ResultMetadata)
+	assert.Equal(t, "model", environmentValue(received.Environment, "FOUNDRY_MODEL_NAME"))
 }
 
-func TestRunEvaluationRequiresEndpointAndModel(t *testing.T) {
-	root := t.TempDir()
-	pythonName := "go"
-	if _, err := resolvePython(root, pythonName); err != nil {
-		t.Skipf("test executable unavailable: %v", err)
-	}
-	target := &evaluationServiceTarget{runner: &recordingProcessRunner{}}
-	files := &resolvedServiceFiles{
-		config: evaluationServiceConfig{
-			Python:         pythonName,
-			DatasetName:    "sample",
-			DatasetVersion: "1",
-			TimeoutSeconds: 90,
-		},
-		serviceRoot: root,
-		script:      filepath.Join(root, "evaluate.py"),
-		dataset:     filepath.Join(root, "evaluation.jsonl"),
-		results:     filepath.Join(root, "results"),
+func TestEvaluationDeployArtifactUsesReport(t *testing.T) {
+	result := &evaluationRunResult{
+		State:       evaluationResultStateCompleted,
+		ReportURL:   "https://ai.azure.com/report",
+		ResultPath:  filepath.Join("results", "remote-run.json"),
+		SummaryText: "Evaluation summary:\n  relevance: 1/1 passed",
 	}
 
-	t.Setenv("FOUNDRY_PROJECT_ENDPOINT", "")
-	t.Setenv("AZURE_AI_PROJECT_ENDPOINT", "")
-	t.Setenv("FOUNDRY_MODEL_NAME", "")
-	t.Setenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "")
+	artifact := evaluationDeployArtifact(result)
 
-	_, err := target.runEvaluation(t.Context(), &azdext.ServiceConfig{}, files)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "endpoint")
+	assert.Equal(t, azdext.ArtifactKind_ARTIFACT_KIND_ENDPOINT, artifact.Kind)
+	assert.Equal(t, azdext.LocationKind_LOCATION_KIND_REMOTE, artifact.LocationKind)
+	assert.Equal(t, result.ReportURL, artifact.Location)
+	assert.Equal(t, "Evaluation report", artifact.Metadata["label"])
+	assert.Contains(t, artifact.Metadata["note"], "Local results:")
 }
 
-func TestResolvePythonPrefersExplicitConfiguration(t *testing.T) {
-	root := t.TempDir()
-	venvPython := filepath.Join(root, ".venv", "bin", "python")
-	require.NoError(t, os.MkdirAll(filepath.Dir(venvPython), 0o750))
-	require.NoError(t, os.WriteFile(venvPython, []byte("stale"), 0o600))
-
-	explicit, err := exec.LookPath("go")
-	if err != nil {
-		t.Skipf("test executable unavailable: %v", err)
+func TestEvaluationDeployArtifactLabelsNoWaitSubmission(t *testing.T) {
+	result := &evaluationRunResult{
+		State:      evaluationResultStateSubmitted,
+		ResultPath: filepath.Join("results", "remote-run.json"),
 	}
-	resolved, err := resolvePython(root, "go")
-	require.NoError(t, err)
-	assert.Equal(t, explicit, resolved)
+
+	artifact := evaluationDeployArtifact(result)
+
+	assert.Equal(t, azdext.ArtifactKind_ARTIFACT_KIND_ENDPOINT, artifact.Kind)
+	assert.Equal(t, azdext.LocationKind_LOCATION_KIND_LOCAL, artifact.LocationKind)
+	assert.Equal(t, result.ResultPath, artifact.Location)
+	assert.Equal(t, "Evaluation submission", artifact.Metadata["label"])
+	assert.Contains(t, artifact.Metadata["note"], "without waiting")
 }
 
 func TestMergeEnvironmentSkipsEmptyOverrides(t *testing.T) {
@@ -179,16 +126,7 @@ func TestMergeEnvironmentSkipsEmptyOverrides(t *testing.T) {
 	assert.Equal(t, "new-value", environmentValue(environment, "NEW"))
 }
 
-type recordingProcessRunner struct {
-	specs []processSpec
-	err   error
-	onRun func(processSpec) error
-}
-
-func (r *recordingProcessRunner) Run(ctx context.Context, spec processSpec) error {
-	r.specs = append(r.specs, spec)
-	if r.onRun != nil {
-		return r.onRun(spec)
-	}
-	return r.err
+func TestSafeResultMetadataName(t *testing.T) {
+	assert.Equal(t, "evaluation-service", safeResultMetadataName("evaluation/service"))
+	assert.Equal(t, "evaluation", safeResultMetadataName(""))
 }

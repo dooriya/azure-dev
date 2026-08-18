@@ -33,6 +33,7 @@ func TestEvaluationInitTargetEnvironmentValues(t *testing.T) {
 		ProjectID:       "project-id",
 		ProjectEndpoint: "https://account.services.ai.azure.com/api/projects/project",
 		ModelDeployment: "gpt-5-1",
+		JudgeDeployment: "gpt-5-mini",
 		SubscriptionID:  "sub",
 		TenantID:        "tenant",
 		Location:        "northcentralus",
@@ -44,6 +45,7 @@ func TestEvaluationInitTargetEnvironmentValues(t *testing.T) {
 	values := target.environmentValues()
 	assert.Equal(t, target.ProjectEndpoint, values["FOUNDRY_PROJECT_ENDPOINT"])
 	assert.Equal(t, target.ModelDeployment, values["FOUNDRY_MODEL_NAME"])
+	assert.Equal(t, target.JudgeDeployment, values["FOUNDRY_JUDGE_MODEL_NAME"])
 	assert.Equal(t, target.ProjectID, values["AZURE_AI_PROJECT_ID"])
 	assert.Equal(t, "https://account.openai.azure.com/", values["AZURE_OPENAI_ENDPOINT"])
 }
@@ -91,8 +93,18 @@ func TestRejectNestedAzdProject(t *testing.T) {
 }
 
 func TestSupportsGenerativeEvaluation(t *testing.T) {
-	assert.True(t, supportsGenerativeEvaluation([]string{"chatCompletion"}))
-	assert.True(t, supportsGenerativeEvaluation([]string{"responses"}))
-	assert.False(t, supportsGenerativeEvaluation([]string{"embeddings"}))
-	assert.False(t, supportsGenerativeEvaluation([]string{"imageGenerations"}))
+	assert.True(t, supportsGenerativeEvaluation(map[string]string{"chat_completion": "true"}))
+	assert.True(t, supportsGenerativeEvaluation(map[string]string{"responses": "TRUE"}))
+	assert.False(t, supportsGenerativeEvaluation(map[string]string{"chat_completion": "false"}))
+	assert.False(t, supportsGenerativeEvaluation(map[string]string{"embeddings": "true"}))
+}
+
+func TestDeploymentIndex(t *testing.T) {
+	deployments := []evaluationDeployment{
+		{Name: "target"},
+		{Name: "judge"},
+	}
+
+	assert.Equal(t, int32(1), deploymentIndex(deployments, "JUDGE"))
+	assert.Equal(t, int32(0), deploymentIndex(deployments, "missing"))
 }

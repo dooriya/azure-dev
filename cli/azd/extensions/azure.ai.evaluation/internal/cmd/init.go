@@ -19,6 +19,7 @@ type initFlags struct {
 	newProject      bool
 	projectID       string
 	modelDeployment string
+	judgeDeployment string
 	subscriptionID  string
 	location        string
 }
@@ -64,6 +65,7 @@ func newInitCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 				ProjectName:     name,
 				ProjectEndpoint: initTarget.ProjectEndpoint,
 				ModelDeployment: initTarget.ModelDeployment,
+				JudgeDeployment: initTarget.JudgeDeployment,
 				Force:           flags.force,
 			})
 			if err != nil {
@@ -110,7 +112,13 @@ func newInitCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 		&flags.modelDeployment,
 		"model-deployment",
 		"",
-		"Existing model deployment name",
+		"Target model deployment that generates responses to evaluate",
+	)
+	command.Flags().StringVar(
+		&flags.judgeDeployment,
+		"judge-model-deployment",
+		"",
+		"Judge model deployment that scores responses with AI-assisted evaluators (defaults to target)",
 	)
 	command.Flags().StringVarP(&flags.subscriptionID, "subscription", "s", "", "Azure subscription ID")
 	command.Flags().StringVarP(&flags.location, "location", "l", "", "Azure location for new resources")
@@ -119,17 +127,20 @@ func newInitCommand(extCtx *azdext.ExtensionContext) *cobra.Command {
 
 func printEvaluationNextSteps(cmd *cobra.Command, existingProject bool) {
 	fmt.Fprintln(cmd.OutOrStdout(), "Next steps:")
-	fmt.Fprintln(cmd.OutOrStdout(), "  1. Create a Python virtual environment and install requirements.txt.")
+	fmt.Fprintln(cmd.OutOrStdout(), "  Run in Microsoft Foundry:")
+	fmt.Fprintln(cmd.OutOrStdout(), "    1. Run: azd provision")
+	fmt.Fprintln(cmd.OutOrStdout(), "    2. Run: azd deploy")
+	fmt.Fprintln(cmd.OutOrStdout(), "  Run locally (optional):")
 	if existingProject {
-		fmt.Fprintln(cmd.OutOrStdout(), "  2. Run: python src/evaluate.py --local")
-		fmt.Fprintln(cmd.OutOrStdout(), "  3. Run: azd provision")
-		fmt.Fprintln(cmd.OutOrStdout(), "  4. Run: azd deploy")
+		fmt.Fprintln(cmd.OutOrStdout(), "    1. Run: python -m venv .venv")
+		fmt.Fprintln(cmd.OutOrStdout(), "    2. Activate .venv and run: python -m pip install -r requirements.txt")
+		fmt.Fprintln(cmd.OutOrStdout(), "    3. Run: python src/evaluate.py --local")
 		return
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "  2. Run: azd provision")
-	fmt.Fprintln(cmd.OutOrStdout(), "  3. Run: azd env get-values > .env")
-	fmt.Fprintln(cmd.OutOrStdout(), "  4. Run: python src/evaluate.py --local")
-	fmt.Fprintln(cmd.OutOrStdout(), "  5. Run: azd deploy")
+	fmt.Fprintln(cmd.OutOrStdout(), "    1. After provisioning, run: azd env get-values > .env")
+	fmt.Fprintln(cmd.OutOrStdout(), "    2. Run: python -m venv .venv")
+	fmt.Fprintln(cmd.OutOrStdout(), "    3. Activate .venv and run: python -m pip install -r requirements.txt")
+	fmt.Fprintln(cmd.OutOrStdout(), "    4. Run: python src/evaluate.py --local")
 }
 
 func classifyScaffoldError(err error) error {

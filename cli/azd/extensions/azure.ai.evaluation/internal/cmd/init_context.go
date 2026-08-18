@@ -33,6 +33,7 @@ type evaluationInitTarget struct {
 	ProjectID       string
 	ProjectEndpoint string
 	ModelDeployment string
+	JudgeDeployment string
 	SubscriptionID  string
 	TenantID        string
 	Location        string
@@ -182,11 +183,16 @@ func resolveExistingEvaluationTarget(
 	if err != nil {
 		return nil, err
 	}
-	deployments, err := listEvaluationDeployments(ctx, credential, project)
-	if err != nil {
-		return nil, err
+	project.TenantID = subscription.GetUserTenantId()
+	if flags.modelDeployment != "" && (flags.judgeDeployment != "" || noPrompt) {
+		project.ModelDeployment = strings.TrimSpace(flags.modelDeployment)
+		project.JudgeDeployment = strings.TrimSpace(flags.judgeDeployment)
+		if project.JudgeDeployment == "" {
+			project.JudgeDeployment = project.ModelDeployment
+		}
+		return project, nil
 	}
-	deployments, err = compatibleEvaluationDeployments(ctx, client, project, deployments)
+	deployments, err := listEvaluationDeployments(ctx, credential, project)
 	if err != nil {
 		return nil, err
 	}
@@ -196,13 +202,30 @@ func resolveExistingEvaluationTarget(
 		deployments,
 		flags.modelDeployment,
 		noPrompt,
+		targetDeploymentRole,
+		"",
 	)
 	if err != nil {
 		return nil, err
 	}
+	judgeDeployment := deployment
+	if flags.judgeDeployment != "" || !noPrompt {
+		judgeDeployment, err = selectEvaluationDeployment(
+			ctx,
+			client,
+			deployments,
+			flags.judgeDeployment,
+			noPrompt,
+			judgeDeploymentRole,
+			deployment,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	project.ModelDeployment = deployment
-	project.TenantID = subscription.GetUserTenantId()
+	project.JudgeDeployment = judgeDeployment
 	return project, nil
 }
 
@@ -212,6 +235,13 @@ func resolveNewEvaluationTarget(
 	flags *initFlags,
 	noPrompt bool,
 ) (*evaluationInitTarget, error) {
+	if flags.judgeDeployment != "" {
+		return nil, evaluationInitValidationError(
+			"--judge-model-deployment is not supported with --new-project",
+			"New-project mode provisions one deployment; omit the judge option or "+
+				"reuse an existing project with a separate judge.",
+		)
+	}
 	target := &evaluationInitTarget{
 		SubscriptionID:  strings.TrimSpace(flags.subscriptionID),
 		Location:        strings.TrimSpace(flags.location),
@@ -304,6 +334,7 @@ func resolveNewEvaluationTarget(
 	if target.ModelDeployment == "" {
 		target.ModelDeployment = defaultEvaluationDeploymentName(target.ModelName)
 	}
+	target.JudgeDeployment = target.ModelDeployment
 	return target, nil
 }
 
@@ -425,6 +456,7 @@ func (t *evaluationInitTarget) environmentValues() map[string]string {
 		"AZURE_AI_MODEL_VERSION":         t.ModelVersion,
 		"AZURE_AI_MODEL_DEPLOYMENT_NAME": t.ModelDeployment,
 		"FOUNDRY_MODEL_NAME":             t.ModelDeployment,
+		"FOUNDRY_JUDGE_MODEL_NAME":       t.JudgeDeployment,
 		"AZURE_AI_MODEL_SKU":             t.ModelSKU,
 	}
 	if t.ModelCapacity > 0 {
@@ -561,34 +593,23 @@ func listEvaluationDeployments(
 	credential azcore.TokenCredential,
 	project *evaluationInitTarget,
 ) ([]evaluationDeployment, error) {
-	deployments, err := armcognitiveservices.NewDeploymentsClient(
-		project.SubscriptionID,
-		credential,
-		nil,
-	)
+	client, err := newFoundryEvaluationClient(project.ProjectEndpoint, credential)
 	if err != nil {
-		return nil, fmt.Errorf("creating model deployments client: %w", err)
+		return nil, fmt.Errorf("creating Foundry deployments client: %w", err)
 	}
-	pager := deployments.NewListPager(project.ResourceGroup, project.AccountName, nil)
+	deployments, err := client.listDeployments(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing project model deployments: %w", err)
+	}
 	var results []evaluationDeployment
-	for pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("listing model deployments: %w", err)
-		}
-		for _, deployment := range page.Value {
-			if deployment.Name != nil && *deployment.Name != "" {
-				modelName := ""
-				if deployment.Properties != nil &&
-					deployment.Properties.Model != nil &&
-					deployment.Properties.Model.Name != nil {
-					modelName = *deployment.Properties.Model.Name
-				}
-				results = append(results, evaluationDeployment{
-					Name:      *deployment.Name,
-					ModelName: modelName,
-				})
-			}
+	for _, deployment := range deployments {
+		if deployment.Name != "" &&
+			strings.EqualFold(deployment.Type, "ModelDeployment") &&
+			supportsGenerativeEvaluation(deployment.Capabilities) {
+			results = append(results, evaluationDeployment{
+				Name:      deployment.Name,
+				ModelName: deployment.ModelName,
+			})
 		}
 	}
 	slices.SortFunc(results, func(a, b evaluationDeployment) int {
@@ -597,50 +618,37 @@ func listEvaluationDeployments(
 	return results, nil
 }
 
-func compatibleEvaluationDeployments(
-	ctx context.Context,
-	client *azdext.AzdClient,
-	project *evaluationInitTarget,
-	deployments []evaluationDeployment,
-) ([]evaluationDeployment, error) {
-	response, err := client.Ai().ListModels(ctx, &azdext.ListModelsRequest{
-		AzureContext: &azdext.AzureContext{Scope: &azdext.AzureScope{
-			SubscriptionId: project.SubscriptionID,
-			TenantId:       project.TenantID,
-		}},
-		Filter: &azdext.AiModelFilterOptions{
-			Locations: []string{project.Location},
-			Formats:   []string{"OpenAI"},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listing compatible evaluation models: %w", err)
-	}
-	compatibleModels := map[string]struct{}{}
-	for _, model := range response.GetModels() {
-		if supportsGenerativeEvaluation(model.GetCapabilities()) {
-			compatibleModels[strings.ToLower(model.GetName())] = struct{}{}
-		}
-	}
-
-	compatible := make([]evaluationDeployment, 0, len(deployments))
-	for _, deployment := range deployments {
-		if _, ok := compatibleModels[strings.ToLower(deployment.ModelName)]; ok {
-			compatible = append(compatible, deployment)
-		}
-	}
-	return compatible, nil
-}
-
-func supportsGenerativeEvaluation(capabilities []string) bool {
-	for _, capability := range capabilities {
-		switch strings.ToLower(capability) {
-		case "agentsv2", "chat", "chatcompletion", "responses":
-			return true
+func supportsGenerativeEvaluation(capabilities map[string]string) bool {
+	for capability, value := range capabilities {
+		normalized := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(capability))
+		if strings.EqualFold(value, "true") {
+			switch normalized {
+			case "agentsv2", "chat", "chatcompletion", "responses":
+				return true
+			}
 		}
 	}
 	return false
 }
+
+type evaluationDeploymentRole struct {
+	name          string
+	promptMessage string
+	requiredFlag  string
+}
+
+var (
+	targetDeploymentRole = evaluationDeploymentRole{
+		name:          "target model deployment",
+		promptMessage: "Select the target model deployment (generates responses to evaluate)",
+		requiredFlag:  "--model-deployment",
+	}
+	judgeDeploymentRole = evaluationDeploymentRole{
+		name:          "judge model deployment",
+		promptMessage: "Select the judge model deployment (scores responses with AI-assisted evaluators)",
+		requiredFlag:  "--judge-model-deployment",
+	}
+)
 
 func selectEvaluationDeployment(
 	ctx context.Context,
@@ -648,6 +656,8 @@ func selectEvaluationDeployment(
 	deployments []evaluationDeployment,
 	requested string,
 	noPrompt bool,
+	role evaluationDeploymentRole,
+	defaultName string,
 ) (string, error) {
 	if requested != "" {
 		for _, deployment := range deployments {
@@ -656,8 +666,8 @@ func selectEvaluationDeployment(
 			}
 		}
 		return "", evaluationInitValidationError(
-			fmt.Sprintf("model deployment %q was not found in the selected Foundry account", requested),
-			"Choose an existing deployment name and retry.",
+			fmt.Sprintf("%s %q was not found in the selected Foundry account", role.name, requested),
+			fmt.Sprintf("Choose an existing %s and retry.", role.name),
 		)
 	}
 	if len(deployments) == 0 {
@@ -668,29 +678,39 @@ func selectEvaluationDeployment(
 	}
 	if noPrompt {
 		return "", evaluationInitValidationError(
-			"--model-deployment is required under --no-prompt",
-			"Pass the name of an existing model deployment.",
+			fmt.Sprintf("%s is required under --no-prompt", role.requiredFlag),
+			fmt.Sprintf("Pass the name of an existing %s.", role.name),
 		)
 	}
 	response, err := client.Prompt().Select(ctx, &azdext.SelectRequest{
 		Options: &azdext.SelectOptions{
-			Message:       "Select a model deployment",
+			Message:       role.promptMessage,
 			Choices:       deploymentChoices(deployments),
-			SelectedIndex: new(int32(0)),
+			SelectedIndex: new(deploymentIndex(deployments, defaultName)),
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("selecting model deployment: %w", err)
+		return "", fmt.Errorf("selecting %s: %w", role.name, err)
 	}
+
 	if response.Value == nil ||
 		int(response.GetValue()) < 0 ||
 		int(response.GetValue()) >= len(deployments) {
 		return "", evaluationInitValidationError(
-			"model deployment selection returned an invalid result",
-			"Select a model deployment and retry.",
+			fmt.Sprintf("%s selection returned an invalid result", role.name),
+			fmt.Sprintf("Select a %s and retry.", role.name),
 		)
 	}
 	return deployments[int(response.GetValue())].Name, nil
+}
+
+func deploymentIndex(deployments []evaluationDeployment, name string) int32 {
+	for index, deployment := range deployments {
+		if strings.EqualFold(deployment.Name, name) {
+			return int32(index) //nolint:gosec // Deployment lists are bounded by the service response.
+		}
+	}
+	return 0
 }
 
 func deploymentChoices(deployments []evaluationDeployment) []*azdext.SelectChoice {

@@ -31,6 +31,7 @@ type Options struct {
 	ProjectName     string
 	ProjectEndpoint string
 	ModelDeployment string
+	JudgeDeployment string
 	Force           bool
 }
 
@@ -51,6 +52,7 @@ var commonProjectFiles = []fileDefinition{
 	{source: "templates/env.example", target: ".env.example"},
 	{source: "templates/README.md", target: "README.md"},
 	{source: "templates/requirements.txt", target: "requirements.txt"},
+	{source: "templates/evaluation.yaml.tmpl", target: "evaluation.yaml", render: true},
 	{source: "templates/data/evaluation.jsonl", target: "data/evaluation.jsonl"},
 	{source: "templates/src/evaluate.py", target: "src/evaluate.py"},
 }

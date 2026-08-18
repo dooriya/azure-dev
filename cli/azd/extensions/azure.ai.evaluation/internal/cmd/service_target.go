@@ -7,15 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
 )
@@ -23,42 +19,18 @@ import (
 var _ azdext.ServiceTargetProvider = (*evaluationServiceTarget)(nil)
 
 type evaluationServiceConfig struct {
-	Script         string `json:"script"`
-	Dataset        string `json:"dataset"`
-	Results        string `json:"results"`
-	DatasetName    string `json:"datasetName"`
-	DatasetVersion string `json:"datasetVersion"`
-	Python         string `json:"python"`
-	TimeoutSeconds int    `json:"timeoutSeconds"`
-	NoWait         bool   `json:"noWait"`
-	Tracing        *bool  `json:"tracing"`
-	CaptureContent bool   `json:"captureContent"`
-}
-
-func defaultEvaluationServiceConfig() evaluationServiceConfig {
-	return evaluationServiceConfig{
-		Script:         filepath.Join("src", "evaluate.py"),
-		Dataset:        filepath.Join("data", "evaluation.jsonl"),
-		Results:        "results",
-		DatasetName:    "model-evaluation",
-		DatasetVersion: "auto",
-		TimeoutSeconds: 3600,
-		Tracing:        new(true),
-	}
+	ConfigFile string `json:"configFile"`
 }
 
 type evaluationServiceTarget struct {
-	azdClient *azdext.AzdClient
-	runner    processRunner
+	azdClient     *azdext.AzdClient
+	managedRunner func(context.Context, managedEvaluationOptions) (*evaluationRunResult, error)
 }
 
 func newEvaluationServiceTarget(client *azdext.AzdClient) azdext.ServiceTargetProvider {
 	return &evaluationServiceTarget{
-		azdClient: client,
-		runner: &execProcessRunner{
-			stdout: os.Stdout,
-			stderr: os.Stderr,
-		},
+		azdClient:     client,
+		managedRunner: runManagedEvaluation,
 	}
 }
 
@@ -78,7 +50,7 @@ func (p *evaluationServiceTarget) Endpoints(
 	if err != nil {
 		return nil, err
 	}
-	result, err := latestEvaluationRunResult(files.results, time.Time{})
+	result, err := readEvaluationRunResult(files.resultMetadata)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -111,22 +83,14 @@ func (p *evaluationServiceTarget) Package(
 	serviceContext *azdext.ServiceContext,
 	progress azdext.ProgressReporter,
 ) (*azdext.ServicePackageResult, error) {
-	files, err := p.resolveServiceFiles(ctx, serviceConfig)
+	_, err := p.resolveServiceFiles(ctx, serviceConfig)
 	if err != nil {
 		return nil, err
 	}
 	if progress != nil {
 		progress("Validated evaluation project")
 	}
-	return &azdext.ServicePackageResult{
-		Artifacts: []*azdext.Artifact{
-			{
-				Kind:         azdext.ArtifactKind_ARTIFACT_KIND_DIRECTORY,
-				Location:     files.serviceRoot,
-				LocationKind: azdext.LocationKind_LOCATION_KIND_LOCAL,
-			},
-		},
-	}, nil
+	return &azdext.ServicePackageResult{}, nil
 }
 
 func (p *evaluationServiceTarget) Publish(
@@ -159,32 +123,58 @@ func (p *evaluationServiceTarget) Deploy(
 		return nil, err
 	}
 	if progress != nil {
-		progress("Managed Foundry evaluation completed")
+		if result.State == evaluationResultStateSubmitted {
+			progress("Managed Foundry evaluation submitted")
+		} else {
+			progress("Managed Foundry evaluation completed")
+		}
+	}
+	return &azdext.ServiceDeployResult{Artifacts: []*azdext.Artifact{
+		evaluationDeployArtifact(result),
+	}}, nil
+}
+
+func evaluationDeployArtifact(result *evaluationRunResult) *azdext.Artifact {
+	if result.State == evaluationResultStateSubmitted {
+		return &azdext.Artifact{
+			Kind:         azdext.ArtifactKind_ARTIFACT_KIND_ENDPOINT,
+			Location:     result.ResultPath,
+			LocationKind: azdext.LocationKind_LOCATION_KIND_LOCAL,
+			Metadata: map[string]string{
+				"label": "Evaluation submission",
+				"note": "Managed run submitted without waiting. " +
+					"The Foundry report URL becomes available after completion.",
+			},
+		}
 	}
 	if result.ReportURL == "" {
-		return &azdext.ServiceDeployResult{Artifacts: []*azdext.Artifact{{
-			Kind:         azdext.ArtifactKind_ARTIFACT_KIND_DIRECTORY,
-			Location:     files.results,
+		return &azdext.Artifact{
+			Kind:         azdext.ArtifactKind_ARTIFACT_KIND_ENDPOINT,
+			Location:     result.ResultPath,
 			LocationKind: azdext.LocationKind_LOCATION_KIND_LOCAL,
-		}}}, nil
+			Metadata: map[string]string{
+				"label": "Evaluation results",
+				"note":  result.SummaryText,
+			},
+		}
 	}
-	return &azdext.ServiceDeployResult{Artifacts: []*azdext.Artifact{{
+	return &azdext.Artifact{
 		Kind:         azdext.ArtifactKind_ARTIFACT_KIND_ENDPOINT,
 		Location:     result.ReportURL,
 		LocationKind: azdext.LocationKind_LOCATION_KIND_REMOTE,
 		Metadata: map[string]string{
 			"label": "Evaluation report",
-			"note":  fmt.Sprintf("Local results: %s", result.ResultPath),
+			"note":  evaluationArtifactNote(result),
 		},
-	}}}, nil
+	}
 }
 
 type resolvedServiceFiles struct {
-	config      evaluationServiceConfig
-	serviceRoot string
-	script      string
-	dataset     string
-	results     string
+	configFile     string
+	evaluation     *evaluationConfig
+	dataset        string
+	output         string
+	resultMetadata string
 }
 
 func (p *evaluationServiceTarget) resolveServiceFiles(
@@ -222,70 +212,62 @@ func (p *evaluationServiceTarget) resolveServiceFiles(
 			fmt.Sprintf("evaluation service path is invalid: %s", err),
 		)
 	}
-	script, err := joinProjectPath(serviceRoot, config.Script)
+	configFile, err := joinProjectPath(serviceRoot, config.ConfigFile)
 	if err != nil {
-		return nil, evaluationConfigError(fmt.Sprintf("evaluation script path is invalid: %s", err))
+		return nil, evaluationConfigError(fmt.Sprintf("evaluation config path is invalid: %s", err))
 	}
-	dataset, err := joinProjectPath(serviceRoot, config.Dataset)
+	info, err := os.Stat(configFile)
 	if err != nil {
-		return nil, evaluationConfigError(fmt.Sprintf("evaluation dataset path is invalid: %s", err))
+		return nil, evaluationConfigError(fmt.Sprintf("evaluation config %q is unavailable: %s", configFile, err))
 	}
-	results, err := joinProjectPath(serviceRoot, config.Results)
+	if info.IsDir() {
+		return nil, evaluationConfigError(fmt.Sprintf("evaluation config %q must be a file", configFile))
+	}
+	evaluation, err := loadEvaluationConfig(configFile)
 	if err != nil {
-		return nil, evaluationConfigError(fmt.Sprintf("evaluation results path is invalid: %s", err))
+		return nil, err
+	}
+	dataset, output, err := evaluation.resolvePaths(configFile)
+	if err != nil {
+		return nil, err
+	}
+	datasetInfo, err := os.Stat(dataset)
+	if err != nil {
+		return nil, evaluationConfigError(fmt.Sprintf("evaluation dataset %q is unavailable: %s", dataset, err))
+	}
+	if datasetInfo.IsDir() {
+		return nil, evaluationConfigError(fmt.Sprintf("evaluation dataset %q must be a file", dataset))
 	}
 
-	for label, path := range map[string]string{"script": script, "dataset": dataset} {
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			return nil, evaluationConfigError(fmt.Sprintf("evaluation %s %q is unavailable: %s", label, path, statErr))
-		}
-		if info.IsDir() {
-			return nil, evaluationConfigError(fmt.Sprintf("evaluation %s %q must be a file", label, path))
-		}
-	}
-
+	metadataName := ".azd-deploy-result-" + safeResultMetadataName(serviceConfig.GetName()) + ".json"
 	return &resolvedServiceFiles{
-		config:      config,
-		serviceRoot: serviceRoot,
-		script:      script,
-		dataset:     dataset,
-		results:     results,
+		configFile:     configFile,
+		evaluation:     evaluation,
+		dataset:        dataset,
+		output:         output,
+		resultMetadata: filepath.Join(output, metadataName),
 	}, nil
 }
 
 func parseEvaluationServiceConfig(serviceConfig *azdext.ServiceConfig) (evaluationServiceConfig, error) {
-	config := defaultEvaluationServiceConfig()
+	var config evaluationServiceConfig
 	properties := serviceConfig.GetAdditionalProperties()
-	if properties == nil {
-		return config, nil
+	if properties != nil {
+		payload, err := json.Marshal(properties.AsMap())
+		if err != nil {
+			return config, evaluationConfigError(
+				fmt.Sprintf("failed to encode evaluation service %q: %s", serviceConfig.GetName(), err),
+			)
+		}
+		if err := json.Unmarshal(payload, &config); err != nil {
+			return config, evaluationConfigError(
+				fmt.Sprintf("failed to parse evaluation service %q: %s", serviceConfig.GetName(), err),
+			)
+		}
 	}
 
-	payload, err := json.Marshal(properties.AsMap())
-	if err != nil {
-		return config, evaluationConfigError(
-			fmt.Sprintf("failed to encode evaluation service %q: %s", serviceConfig.GetName(), err),
-		)
-	}
-	if err := json.Unmarshal(payload, &config); err != nil {
-		return config, evaluationConfigError(
-			fmt.Sprintf("failed to parse evaluation service %q: %s", serviceConfig.GetName(), err),
-		)
-	}
-
-	switch {
-	case strings.TrimSpace(config.Script) == "":
-		return config, evaluationConfigError("evaluation service 'script' cannot be empty")
-	case strings.TrimSpace(config.Dataset) == "":
-		return config, evaluationConfigError("evaluation service 'dataset' cannot be empty")
-	case strings.TrimSpace(config.Results) == "":
-		return config, evaluationConfigError("evaluation service 'results' cannot be empty")
-	case strings.TrimSpace(config.DatasetName) == "":
-		return config, evaluationConfigError("evaluation service 'datasetName' cannot be empty")
-	case strings.TrimSpace(config.DatasetVersion) == "":
-		return config, evaluationConfigError("evaluation service 'datasetVersion' cannot be empty")
-	case config.TimeoutSeconds <= 0:
-		return config, evaluationConfigError("evaluation service 'timeoutSeconds' must be greater than zero")
+	if strings.TrimSpace(config.ConfigFile) == "" {
+		return config, evaluationConfigError("evaluation service 'configFile' cannot be empty")
 	}
 	return config, nil
 }
@@ -304,140 +286,77 @@ func (p *evaluationServiceTarget) runEvaluation(
 	serviceConfig *azdext.ServiceConfig,
 	files *resolvedServiceFiles,
 ) (*evaluationRunResult, error) {
-	python, err := resolvePython(files.serviceRoot, files.config.Python)
-	if err != nil {
-		return nil, err
-	}
-
-	args := []string{
-		files.script,
-		"--remote",
-		"--dataset", files.dataset,
-		"--output-dir", files.results,
-		"--dataset-name", files.config.DatasetName,
-		"--dataset-version", files.config.DatasetVersion,
-		"--timeout-seconds", strconv.Itoa(files.config.TimeoutSeconds),
-	}
-	if files.config.NoWait {
-		args = append(args, "--no-wait")
-	}
-	if files.config.Tracing != nil && !*files.config.Tracing {
-		args = append(args, "--no-tracing")
-	}
-	if files.config.CaptureContent {
-		args = append(args, "--capture-content")
-	}
-
 	environment := mergeEnvironment(os.Environ(), serviceConfig.GetEnvironment())
-	if environmentValue(environment, "FOUNDRY_PROJECT_ENDPOINT", "AZURE_AI_PROJECT_ENDPOINT") == "" {
-		return nil, &azdext.LocalError{
-			Message:    "Foundry project endpoint is not configured.",
-			Code:       "evaluation_project_endpoint_missing",
-			Category:   azdext.LocalErrorCategoryDependency,
-			Suggestion: "Run 'azd provision', or set FOUNDRY_PROJECT_ENDPOINT in the active azd environment.",
-		}
+	if err := os.Remove(files.resultMetadata); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("clearing prior evaluation deployment result: %w", err)
 	}
-	if environmentValue(environment, "FOUNDRY_MODEL_NAME", "AZURE_AI_MODEL_DEPLOYMENT_NAME") == "" {
-		return nil, &azdext.LocalError{
-			Message:    "Foundry model deployment is not configured.",
-			Code:       "evaluation_model_deployment_missing",
-			Category:   azdext.LocalErrorCategoryDependency,
-			Suggestion: "Run 'azd provision', or set FOUNDRY_MODEL_NAME in the active azd environment.",
-		}
+	runner := p.managedRunner
+	if runner == nil {
+		runner = runManagedEvaluation
 	}
-
-	startedAt := time.Now()
-	err = p.runner.Run(ctx, processSpec{
-		executable:  python,
-		args:        args,
-		directory:   files.serviceRoot,
-		environment: environment,
+	result, err := runner(ctx, managedEvaluationOptions{
+		Config:         files.evaluation,
+		DatasetPath:    files.dataset,
+		OutputPath:     files.output,
+		ResultMetadata: files.resultMetadata,
+		Environment:    environment,
 	})
 	if err != nil {
+		resultDetails := ""
+		if result == nil {
+			result, _ = readEvaluationRunResult(files.resultMetadata)
+		}
+		if result != nil {
+			if result.ReportURL != "" {
+				resultDetails += fmt.Sprintf(" Foundry report: %s.", result.ReportURL)
+			}
+			if result.ResultPath != "" {
+				resultDetails += fmt.Sprintf(" Local results: %s.", result.ResultPath)
+			}
+		}
 		return nil, &azdext.LocalError{
-			Message:  fmt.Sprintf("Managed evaluation failed: %s", err),
+			Message:  fmt.Sprintf("Managed evaluation failed: %s%s", err, resultDetails),
 			Code:     "evaluation_remote_run_failed",
 			Category: azdext.LocalErrorCategoryDependency,
-			Suggestion: "Review the Python error above, install requirements.txt, and verify your Foundry access. " +
-				"Use datasetVersion: auto or choose an unused explicit version.",
-		}
-	}
-	result, err := latestEvaluationRunResult(files.results, startedAt)
-	if err != nil {
-		return nil, &azdext.LocalError{
-			Message:    fmt.Sprintf("Managed evaluation completed without a readable result: %s", err),
-			Code:       "evaluation_result_missing",
-			Category:   azdext.LocalErrorCategoryInternal,
-			Suggestion: "Inspect the results directory and retry the deployment.",
-		}
-	}
-	if result.ReportURL == "" && !files.config.NoWait {
-		return nil, &azdext.LocalError{
-			Message:    "Managed evaluation result did not include a Foundry report URL.",
-			Code:       "evaluation_report_url_missing",
-			Category:   azdext.LocalErrorCategoryInternal,
-			Suggestion: "Inspect the local result JSON and retry the deployment.",
+			Suggestion: "Review the evaluation error and generated result above. " +
+				"Verify evaluation.yaml and Foundry access before retrying.",
 		}
 	}
 	return result, nil
 }
 
 type evaluationRunResult struct {
-	ReportURL  string
-	ResultPath string
+	State       string `json:"state"`
+	ReportURL   string `json:"report_url"`
+	ResultPath  string `json:"result_path"`
+	SummaryText string `json:"summary_text"`
 }
 
-func latestEvaluationRunResult(resultsDir string, startedAt time.Time) (*evaluationRunResult, error) {
-	entries, err := os.ReadDir(resultsDir)
+func evaluationArtifactNote(result *evaluationRunResult) string {
+	localResult := fmt.Sprintf("Local results: %s", result.ResultPath)
+	if strings.TrimSpace(result.SummaryText) == "" {
+		return localResult
+	}
+	summary := strings.ReplaceAll(result.SummaryText, "\n", "\n  ")
+	return summary + "\n  " + localResult
+}
+
+func readEvaluationRunResult(metadataPath string) (*evaluationRunResult, error) {
+	// The metadata is generated by the scaffolded evaluation script.
+	content, err := os.ReadFile(metadataPath) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("reading evaluation deployment result: %w", err)
+	}
+	var result evaluationRunResult
+	if err := json.Unmarshal(content, &result); err != nil {
+		return nil, fmt.Errorf("parsing evaluation deployment result: %w", err)
+	}
+	reportURL, err := validateEvaluationReportURL(result.ReportURL)
 	if err != nil {
 		return nil, err
 	}
-
-	var latestPath string
-	var latestTime time.Time
-	for _, entry := range entries {
-		if entry.IsDir() ||
-			!strings.HasPrefix(entry.Name(), "remote-") ||
-			filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, fmt.Errorf("reading evaluation result metadata: %w", err)
-		}
-		if !startedAt.IsZero() && info.ModTime().Before(startedAt.Add(-time.Second)) {
-			continue
-		}
-		if latestPath == "" || info.ModTime().After(latestTime) {
-			latestPath = filepath.Join(resultsDir, entry.Name())
-			latestTime = info.ModTime()
-		}
-	}
-	if latestPath == "" {
-		return nil, os.ErrNotExist
-	}
-
-	// The result is generated by the scaffolded evaluation script.
-	content, err := os.ReadFile(latestPath) //nolint:gosec
-	if err != nil {
-		return nil, fmt.Errorf("reading evaluation result: %w", err)
-	}
-	var document struct {
-		Run struct {
-			ReportURL string `json:"report_url"`
-		} `json:"run"`
-	}
-	if err := json.Unmarshal(content, &document); err != nil {
-		return nil, fmt.Errorf("parsing evaluation result: %w", err)
-	}
-	reportURL, err := validateEvaluationReportURL(document.Run.ReportURL)
-	if err != nil {
-		return nil, err
-	}
-	return &evaluationRunResult{
-		ReportURL:  reportURL,
-		ResultPath: latestPath,
-	}, nil
+	result.ReportURL = reportURL
+	return &result, nil
 }
 
 func validateEvaluationReportURL(value string) (string, error) {
@@ -452,45 +371,6 @@ func validateEvaluationReportURL(value string) (string, error) {
 		return "", fmt.Errorf("Foundry report URL must use HTTPS")
 	}
 	return parsed.String(), nil
-}
-
-func resolvePython(serviceRoot, configured string) (string, error) {
-	if configured != "" {
-		if path, err := exec.LookPath(configured); err == nil {
-			return path, nil
-		}
-		return "", pythonNotFoundError(configured)
-	}
-
-	venvCandidates := []string{
-		filepath.Join(serviceRoot, ".venv", "bin", "python"),
-		filepath.Join(serviceRoot, ".venv", "Scripts", "python.exe"),
-	}
-	for _, candidate := range venvCandidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-
-	candidates := []string{"python3", "python"}
-	if runtime.GOOS == "windows" {
-		candidates = []string{"python", "py"}
-	}
-	for _, candidate := range candidates {
-		if path, err := exec.LookPath(candidate); err == nil {
-			return path, nil
-		}
-	}
-	return "", pythonNotFoundError(strings.Join(candidates, " or "))
-}
-
-func pythonNotFoundError(name string) error {
-	return &azdext.LocalError{
-		Message:    fmt.Sprintf("Could not find Python (%s).", name),
-		Code:       "evaluation_python_not_found",
-		Category:   azdext.LocalErrorCategoryDependency,
-		Suggestion: "Install Python 3.10 or later, or set services.evaluation.python in azure.yaml.",
-	}
 }
 
 func mergeEnvironment(base []string, overrides map[string]string) []string {
@@ -548,31 +428,21 @@ func environmentValue(environment []string, names ...string) string {
 	return ""
 }
 
-type processSpec struct {
-	executable  string
-	args        []string
-	directory   string
-	environment []string
-}
-
-type processRunner interface {
-	Run(ctx context.Context, spec processSpec) error
-}
-
-type execProcessRunner struct {
-	stdout io.Writer
-	stderr io.Writer
-}
-
-func (r *execProcessRunner) Run(ctx context.Context, spec processSpec) error {
-	// The executable is resolved through exec.LookPath or a scaffold-local virtual environment.
-	command := exec.CommandContext(ctx, spec.executable, spec.args...) //nolint:gosec
-	command.Dir = spec.directory
-	command.Env = spec.environment
-	command.Stdout = r.stdout
-	command.Stderr = r.stderr
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("running %s: %w", filepath.Base(spec.executable), err)
+func safeResultMetadataName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "evaluation"
 	}
-	return nil
+	return strings.Map(func(character rune) rune {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= 'A' && character <= 'Z',
+			character >= '0' && character <= '9',
+			character == '-',
+			character == '_':
+			return character
+		default:
+			return '-'
+		}
+	}, value)
 }

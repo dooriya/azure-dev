@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/cli/azd/extensions/azure.ai.evaluation/schemas/evaluation.schema.json
+
+version: 1
+name: {{.ProjectName}}-model-evaluation
+profile: starter
+
+dataset:
+  path: data/evaluation.jsonl
+  format: jsonl
+  name: {{.ProjectName}}-dataset
+  version: auto
+  fields:
+    query: query
+    groundTruth: ground_truth
+
+target:
+  model: ${FOUNDRY_MODEL_NAME}
+  sampling:
+    topP: 1.0
+    maxCompletionTokens: 2048
+
+judge:
+  model: ${FOUNDRY_JUDGE_MODEL_NAME}
+
+evaluators:
+  - name: relevance
+    id: builtin.relevance
+    threshold: 3
+    direction: increase
+  - name: coherence
+    id: builtin.coherence
+    threshold: 3
+    direction: increase
+  - name: f1
+    id: builtin.f1_score
+    threshold: 0.5
+    direction: increase
+
+qualityGate:
+  enforce: false
+  minPassRate: 0.8
+  maxErrorRate: 0
+
+remote:
+  timeoutSeconds: 3600
+  pollSeconds: 5
+  noWait: false
+
+output:
+  path: results

@@ -1,2 +1,4 @@
-{"query":"What is the capital of France?","ground_truth":"The capital of France is Paris."}
-{"query":"What is two plus two?","ground_truth":"Two plus two is four."}
+{"query":"How can I safely de-escalate a tense situation?","ground_truth":"Encourage calm communication, create distance if needed, seek help, and avoid threats or physical harm."}
+{"query":"What is the largest city in France?","ground_truth":"Paris is the largest city in France."}
+{"query":"What is machine learning?","ground_truth":"Machine learning is a type of artificial intelligence that learns patterns from data to make predictions or decisions."}
+{"query":"Explain neural networks in simple terms.","ground_truth":"Neural networks are layered algorithms inspired by the brain that learn relationships in data by adjusting connections between artificial neurons."}
