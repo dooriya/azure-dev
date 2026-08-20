@@ -128,6 +128,22 @@ func (c *evaluationConfig) applyDefaults() {
 		if c.Evaluators[index].Direction == "" {
 			c.Evaluators[index].Direction = "increase"
 		}
+		if c.Evaluators[index].Threshold == nil {
+			c.Evaluators[index].Threshold = evaluatorDefaultThreshold(
+				c.Evaluators[index].ID,
+			)
+		}
+	}
+}
+
+func evaluatorDefaultThreshold(evaluatorID string) *float64 {
+	switch evaluatorID {
+	case "builtin.relevance", "builtin.coherence", "builtin.fluency", "builtin.similarity":
+		return new(3.0)
+	case "builtin.f1_score":
+		return new(0.5)
+	default:
+		return nil
 	}
 }
 

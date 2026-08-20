@@ -54,6 +54,8 @@ var commonProjectFiles = []fileDefinition{
 	{source: "templates/requirements.txt", target: "requirements.txt"},
 	{source: "templates/evaluation.yaml.tmpl", target: "evaluation.yaml", render: true},
 	{source: "templates/data/evaluation.jsonl", target: "data/evaluation.jsonl"},
+	{source: "templates/src/evaluation_config.py", target: "src/evaluation_config.py"},
+	{source: "templates/src/evaluation_runtime.py", target: "src/evaluation_runtime.py"},
 	{source: "templates/src/evaluate.py", target: "src/evaluate.py"},
 }
 

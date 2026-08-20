@@ -61,8 +61,16 @@ func TestProjectCreatesRunnableScaffold(t *testing.T) {
 
 	python, err := os.ReadFile(filepath.Join(target, "src", "evaluate.py")) //nolint:gosec
 	require.NoError(t, err)
-	assert.Contains(t, string(python), "def run_local(")
-	assert.Contains(t, string(python), "def run_remote(")
+	assert.Contains(t, string(python), "run_local_evaluation")
+
+	configModule, err := os.ReadFile(filepath.Join(target, "src", "evaluation_config.py")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Contains(t, string(configModule), "class EvaluationConfig")
+
+	runtimeModule, err := os.ReadFile(filepath.Join(target, "src", "evaluation_runtime.py")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Contains(t, string(runtimeModule), "EVALUATOR_SPECS")
+	assert.Contains(t, string(runtimeModule), "def run_local_evaluation(")
 
 	envExample, err := os.ReadFile(filepath.Join(target, ".env.example")) //nolint:gosec
 	require.NoError(t, err)

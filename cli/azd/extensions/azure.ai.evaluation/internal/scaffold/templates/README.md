@@ -1,12 +1,15 @@
 # Model evaluation project
 
-This project runs the same model and dataset in two modes:
+This project runs the same target, dataset, evaluators, thresholds, and quality
+gate from `evaluation.yaml` in two modes:
 
-- **Local:** Python sends each query to the deployed model and computes exact
-  match and token F1 scores on the local machine.
+- **Local:** Python generates responses and runs the configured evaluators with
+  the Azure AI Evaluation SDK.
 - **Remote:** Microsoft Foundry uploads the JSONL dataset, generates model
-  responses server-side, and runs built-in relevance, coherence, and F1
-  evaluators.
+  responses server-side, and runs the same evaluator definitions.
+
+AI-assisted scores can vary between runs, but their evaluator identities,
+mappings, thresholds, directions, and quality-gate rules are shared.
 
 ## Prerequisites
 
@@ -95,6 +98,10 @@ python src/evaluate.py --local
 
 Local results are written under `results/`.
 
+The local result contains the same per-evaluator pass/error summary and quality
+gate shape shown by `azd deploy`. It also includes row-level scores, reasons,
+and errors from the configured evaluators.
+
 ## Customize datasets and evaluators
 
 Edit `evaluation.yaml` to customize:
@@ -117,6 +124,30 @@ target:
 
 The same system prompt is applied to local requests and managed Foundry runs.
 Omit it or set it to an empty string to preserve the model's default behavior.
+For deployments backed by `gpt-5*` and `o1`/`o3`/`o4` reasoning models, `topP`
+is omitted automatically because those models reject the parameter. The
+underlying model is resolved from Foundry deployment metadata, so custom
+deployment aliases work; the configured maximum completion-token limit still
+applies.
+
+Local execution currently supports:
+
+- `builtin.relevance`
+- `builtin.coherence`
+- `builtin.fluency`
+- `builtin.similarity`
+- `builtin.f1_score`
+
+An unsupported evaluator fails explicitly instead of substituting a different
+local metric. To add another locally supported built-in evaluator, extend the
+public evaluator registry in `src/evaluation_runtime.py`.
+
+The generated Python is organized for customization:
+
+- `src/evaluate.py` — command-line entry point.
+- `src/evaluation_config.py` — strict `evaluation.yaml` parsing and typed config.
+- `src/evaluation_runtime.py` — target generation, evaluator registry,
+  mappings, summary, quality gate, and result writing.
 
 The starter profile uses relevance, coherence, and F1. F1 is a lexical baseline
 and can fail correct paraphrases; use the Foundry report and AI-assisted

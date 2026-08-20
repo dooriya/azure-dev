@@ -130,3 +130,9 @@ func TestExpandEvaluationEnvironment(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MISSING")
 }
+
+func TestEvaluatorDefaultThreshold(t *testing.T) {
+	assert.Equal(t, new(3.0), evaluatorDefaultThreshold("builtin.relevance"))
+	assert.Equal(t, new(0.5), evaluatorDefaultThreshold("builtin.f1_score"))
+	assert.Nil(t, evaluatorDefaultThreshold("custom.evaluator"))
+}

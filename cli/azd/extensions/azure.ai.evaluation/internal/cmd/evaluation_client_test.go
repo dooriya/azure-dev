@@ -25,7 +25,8 @@ func TestFoundryEvaluationClientWorkflow(t *testing.T) {
 	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodGet &&
-			request.URL.Path == "/api/projects/sample/deployments":
+			request.URL.Path == "/api/projects/sample/deployments" &&
+			request.URL.Query().Get("after") == "":
 			assert.Equal(t, foundryAPIVersion, request.URL.Query().Get("api-version"))
 			writeTestJSON(t, writer, map[string]any{
 				"value": []map[string]any{
@@ -33,6 +34,21 @@ func TestFoundryEvaluationClientWorkflow(t *testing.T) {
 						"name":         "target",
 						"type":         "ModelDeployment",
 						"modelName":    "gpt-5",
+						"capabilities": map[string]string{"chat_completion": "true"},
+					},
+				},
+				"nextLink": server.URL +
+					"/api/projects/sample/deployments?api-version=v1&after=target",
+			})
+		case request.Method == http.MethodGet &&
+			request.URL.Path == "/api/projects/sample/deployments" &&
+			request.URL.Query().Get("after") == "target":
+			writeTestJSON(t, writer, map[string]any{
+				"value": []map[string]any{
+					{
+						"name":         "judge",
+						"type":         "ModelDeployment",
+						"modelName":    "gpt-4.1",
 						"capabilities": map[string]string{"chat_completion": "true"},
 					},
 				},
@@ -119,8 +135,9 @@ func TestFoundryEvaluationClientWorkflow(t *testing.T) {
 	client := newFoundryEvaluationClientWithPipeline(server.URL+"/api/projects/sample", pipeline)
 	deployments, err := client.listDeployments(t.Context())
 	require.NoError(t, err)
-	require.Len(t, deployments, 1)
+	require.Len(t, deployments, 2)
 	assert.Equal(t, "target", deployments[0].Name)
+	assert.Equal(t, "judge", deployments[1].Name)
 	pending, err := client.startPendingUpload(t.Context(), "starter", "1")
 	require.NoError(t, err)
 	require.NotNil(t, pending.BlobReference)
@@ -215,4 +232,17 @@ func TestFoundryClientRejectsStalledPagination(t *testing.T) {
 	_, err := client.listOutputItems(context.Background(), "eval", "run")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cursor")
+}
+
+func TestDeploymentPageRequestRejectsCrossOriginNextLink(t *testing.T) {
+	client := &foundryEvaluationClient{
+		endpoint: "https://account.services.ai.azure.com/api/projects/project",
+	}
+
+	_, _, err := client.deploymentPageRequest(
+		"https://evil.example/api/projects/project/deployments?after=token",
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project endpoint")
 }

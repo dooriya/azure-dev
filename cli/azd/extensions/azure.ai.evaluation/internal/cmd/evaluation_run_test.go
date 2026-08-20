@@ -140,6 +140,33 @@ func TestSafeEvaluationResultID(t *testing.T) {
 	assert.Equal(t, "evaluation", safeEvaluationResultID(".."))
 }
 
+func TestTargetSamplingParameters(t *testing.T) {
+	sampling := evaluationSamplingConfig{
+		TopP:                new(0.8),
+		MaxCompletionTokens: new(1024),
+	}
+
+	standard := targetSamplingParameters("gpt-4.1", sampling)
+	assert.Equal(t, 0.8, standard["top_p"])
+	assert.Equal(t, 1024, standard["max_completion_tokens"])
+
+	reasoning := targetSamplingParameters("gpt-5.6-luna", sampling)
+	assert.NotContains(t, reasoning, "top_p")
+	assert.Equal(t, 1024, reasoning["max_completion_tokens"])
+}
+
+func TestFindFoundryDeployment(t *testing.T) {
+	deployment, found := findFoundryDeployment(
+		[]foundryDeployment{{Name: "prod-chat", ModelName: "gpt-5.6-luna"}},
+		"PROD-CHAT",
+	)
+	require.True(t, found)
+	assert.Equal(t, "gpt-5.6-luna", deployment.ModelName)
+
+	_, found = findFoundryDeployment(nil, "missing")
+	assert.False(t, found)
+}
+
 func TestWriteManagedEvaluationResultContract(t *testing.T) {
 	root := t.TempDir()
 	metadataPath := filepath.Join(root, "results", "azd-evaluation-output-evaluation-efe77b201dc2.json")

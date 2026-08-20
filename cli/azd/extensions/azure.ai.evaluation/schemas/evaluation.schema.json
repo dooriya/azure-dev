@@ -95,7 +95,8 @@
             "topP": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1
+              "maximum": 1,
+              "description": "Nucleus sampling value. Omitted automatically for reasoning-model deployments that do not support top_p."
             },
             "maxCompletionTokens": {
               "type": "integer",

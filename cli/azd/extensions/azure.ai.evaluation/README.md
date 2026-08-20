@@ -17,7 +17,8 @@ azd deploy
 - `azure.yaml` with an `azure.ai.evaluation` service.
 - For `--new-project`, Bicep infrastructure for a Foundry project, model
   deployment, Application Insights, and Log Analytics.
-- Python code for local model evaluation.
+- Readable Python modules for config-driven local model evaluation with the
+  Azure AI Evaluation SDK.
 - A starter JSONL dataset.
 - `evaluation.yaml` for target/judge models, an optional target system prompt,
   field mappings, evaluators, thresholds, sampling, remote options, and quality

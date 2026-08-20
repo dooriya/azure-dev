@@ -136,24 +136,76 @@ func (c *foundryEvaluationClient) getDataset(
 func (c *foundryEvaluationClient) listDeployments(
 	ctx context.Context,
 ) ([]foundryDeployment, error) {
-	var response struct {
-		Value []foundryDeployment `json:"value"`
+	type deploymentPage struct {
+		Value    []foundryDeployment `json:"value"`
+		NextLink string              `json:"nextLink"`
 	}
-	content, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		"/deployments",
-		map[string]string{"api-version": foundryAPIVersion},
-		nil,
-		"",
-	)
+
+	path := "/deployments"
+	query := map[string]string{"api-version": foundryAPIVersion}
+	var deployments []foundryDeployment
+	seen := map[string]struct{}{}
+	for {
+		content, err := c.doRequest(
+			ctx,
+			http.MethodGet,
+			path,
+			query,
+			nil,
+			"",
+		)
+		if err != nil {
+			return nil, err
+		}
+		var page deploymentPage
+		if err := json.Unmarshal(content, &page); err != nil {
+			return nil, fmt.Errorf("parsing Foundry deployments: %w", err)
+		}
+		deployments = append(deployments, page.Value...)
+		if page.NextLink == "" {
+			return deployments, nil
+		}
+		if _, exists := seen[page.NextLink]; exists {
+			return nil, fmt.Errorf("Foundry deployment pagination returned a repeated nextLink")
+		}
+		seen[page.NextLink] = struct{}{}
+		path, query, err = c.deploymentPageRequest(page.NextLink)
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (c *foundryEvaluationClient) deploymentPageRequest(
+	nextLink string,
+) (string, map[string]string, error) {
+	base, err := url.Parse(c.endpoint)
 	if err != nil {
-		return nil, err
+		return "", nil, fmt.Errorf("parsing Foundry endpoint for pagination: %w", err)
 	}
-	if err := json.Unmarshal(content, &response); err != nil {
-		return nil, fmt.Errorf("parsing Foundry deployments: %w", err)
+	reference, err := url.Parse(nextLink)
+	if err != nil {
+		return "", nil, fmt.Errorf("parsing Foundry deployment nextLink: %w", sanitizedURLError(err))
 	}
-	return response.Value, nil
+	resolved := base.ResolveReference(reference)
+	if !strings.EqualFold(resolved.Scheme, base.Scheme) ||
+		!strings.EqualFold(resolved.Host, base.Host) ||
+		resolved.User != nil ||
+		resolved.Fragment != "" {
+		return "", nil, fmt.Errorf("Foundry deployment nextLink must remain on the project endpoint")
+	}
+	basePath := strings.TrimSuffix(base.Path, "/")
+	if !strings.HasPrefix(resolved.Path, basePath+"/deployments") {
+		return "", nil, fmt.Errorf("Foundry deployment nextLink has an unexpected path")
+	}
+	path := strings.TrimPrefix(resolved.Path, basePath)
+	query := make(map[string]string, len(resolved.Query()))
+	for key, values := range resolved.Query() {
+		if len(values) > 0 {
+			query[key] = values[0]
+		}
+	}
+	return path, query, nil
 }
 
 func (c *foundryEvaluationClient) startPendingUpload(

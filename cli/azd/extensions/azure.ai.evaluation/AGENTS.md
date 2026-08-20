@@ -20,8 +20,7 @@ go build
 go test ./...
 ```
 
-Keep the generated Python local and remote flows aligned. Remote evaluations
-must use the stable Foundry `/openai/v1/evals` contract through
-`azure-ai-projects`, and tracing must remain enabled by default without
-capturing prompt or response content.
-
+Keep the generated Python local evaluator registry aligned with the Go managed
+runner. Both modes use `evaluation.yaml` as their only evaluation-definition
+source. Managed evaluations use the stable Foundry `/openai/v1/evals` contract;
+local evaluations use the public `azure-ai-evaluation` SDK.

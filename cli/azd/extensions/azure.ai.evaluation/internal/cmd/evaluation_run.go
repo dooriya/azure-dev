@@ -151,6 +151,18 @@ func executeManagedEvaluation(
 	if err != nil {
 		return nil, err
 	}
+	deployments, err := client.listDeployments(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing Foundry model deployments: %w", err)
+	}
+	targetDeployment, ok := findFoundryDeployment(deployments, targetModel)
+	if !ok {
+		return nil, fmt.Errorf(
+			"target model deployment %q was not found in the Foundry project",
+			targetModel,
+		)
+	}
+	targetModelName := defaultString(targetDeployment.ModelName, targetModel)
 
 	registeredDataset, err := registerEvaluationDataset(
 		ctx,
@@ -216,10 +228,10 @@ func executeManagedEvaluation(
 			"target": map[string]any{
 				"type":  "azure_ai_model",
 				"model": targetModel,
-				"sampling_params": map[string]any{
-					"top_p":                 *options.Config.Target.Sampling.TopP,
-					"max_completion_tokens": *options.Config.Target.Sampling.MaxCompletionTokens,
-				},
+				"sampling_params": targetSamplingParameters(
+					targetModelName,
+					options.Config.Target.Sampling,
+				),
 			},
 		},
 	})
@@ -740,6 +752,39 @@ func evaluatorUsesJudge(evaluatorID string) bool {
 	default:
 		return false
 	}
+}
+
+func targetSamplingParameters(
+	model string,
+	sampling evaluationSamplingConfig,
+) map[string]any {
+	parameters := map[string]any{
+		"max_completion_tokens": *sampling.MaxCompletionTokens,
+	}
+	if !isReasoningModelName(model) {
+		parameters["top_p"] = *sampling.TopP
+	}
+	return parameters
+}
+
+func findFoundryDeployment(
+	deployments []foundryDeployment,
+	name string,
+) (*foundryDeployment, bool) {
+	for index := range deployments {
+		if strings.EqualFold(deployments[index].Name, name) {
+			return &deployments[index], true
+		}
+	}
+	return nil, false
+}
+
+func isReasoningModelName(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "gpt-5") ||
+		strings.HasPrefix(normalized, "o1") ||
+		strings.HasPrefix(normalized, "o3") ||
+		strings.HasPrefix(normalized, "o4")
 }
 
 func safeEvaluationResultID(value string) string {
