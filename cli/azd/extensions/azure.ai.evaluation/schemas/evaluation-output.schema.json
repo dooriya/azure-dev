@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Azure/azure-dev/main/cli/azd/extensions/azure.ai.evaluation/schemas/evaluation-output.schema.json",
+  "title": "Microsoft Foundry evaluation output",
+  "description": "Stable machine-readable output from an azd-managed Microsoft Foundry evaluation run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "extensionVersion",
+    "projectEndpoint",
+    "targetDeployment",
+    "judgeDeployment",
+    "datasetName",
+    "datasetVersion",
+    "evaluationId",
+    "runId",
+    "status",
+    "reportUrl",
+    "resultPath"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Version of this output contract."
+    },
+    "extensionVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Version of azure.ai.evaluation that produced the output."
+    },
+    "projectEndpoint": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://[^/]+\\.services\\.ai\\.azure\\.com/api/projects/[^/]+$"
+    },
+    "targetDeployment": {
+      "type": "string",
+      "minLength": 1
+    },
+    "judgeDeployment": {
+      "type": "string",
+      "minLength": 1
+    },
+    "datasetName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "datasetVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evaluationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Foundry run status such as queued, in_progress, completed, failed, or canceled."
+    },
+    "reportUrl": {
+      "description": "Foundry report URL. Empty until available for a no-wait submission.",
+      "anyOf": [
+        {
+          "const": ""
+        },
+        {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        }
+      ]
+    },
+    "resultPath": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to the detailed local run result JSON."
+    }
+  }
+}

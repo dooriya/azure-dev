@@ -8,6 +8,7 @@ words:
   - buildmode
   - chatcompletion
   - datetime
+  - evalrun
   - evals
   - FOUNDRY
   - genai

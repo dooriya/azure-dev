@@ -15,6 +15,9 @@ dataset:
 
 target:
   model: ${FOUNDRY_MODEL_NAME}
+  # Optional instructions applied to every dataset row.
+  # systemPrompt: |
+  #   You are a concise technical assistant.
   sampling:
     topP: 1.0
     maxCompletionTokens: 2048

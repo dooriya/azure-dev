@@ -56,6 +56,7 @@ func TestProjectCreatesRunnableScaffold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(evaluationYAML), "profile: starter")
 	assert.Contains(t, string(evaluationYAML), "FOUNDRY_JUDGE_MODEL_NAME")
+	assert.Contains(t, string(evaluationYAML), "systemPrompt:")
 	assert.Contains(t, string(evaluationYAML), "minPassRate: 0.8")
 
 	python, err := os.ReadFile(filepath.Join(target, "src", "evaluate.py")) //nolint:gosec

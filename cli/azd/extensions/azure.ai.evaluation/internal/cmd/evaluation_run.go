@@ -15,14 +15,13 @@ import (
 	"strings"
 	"time"
 
+	"azure.ai.evaluation/internal/version"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
 )
 
-const (
-	evaluationResultStateSubmitted = "submitted"
-	evaluationResultStateCompleted = "completed"
-)
+const evaluationOutputSchemaVersion = 1
 
 type managedEvaluationOptions struct {
 	Config         *evaluationConfig
@@ -65,6 +64,22 @@ type evaluationGateResult struct {
 	Enforced     bool    `json:"enforced"`
 	MinPassRate  float64 `json:"minPassRate"`
 	MaxErrorRate float64 `json:"maxErrorRate"`
+}
+
+type evaluationRunResult struct {
+	SchemaVersion    int    `json:"schemaVersion"`
+	ExtensionVersion string `json:"extensionVersion"`
+	ProjectEndpoint  string `json:"projectEndpoint"`
+	TargetDeployment string `json:"targetDeployment"`
+	JudgeDeployment  string `json:"judgeDeployment"`
+	DatasetName      string `json:"datasetName"`
+	DatasetVersion   string `json:"datasetVersion"`
+	EvaluationID     string `json:"evaluationId"`
+	RunID            string `json:"runId"`
+	Status           string `json:"status"`
+	ReportURL        string `json:"reportUrl"`
+	ResultPath       string `json:"resultPath"`
+	SummaryText      string `json:"-"`
 }
 
 func runManagedEvaluation(
@@ -194,22 +209,10 @@ func executeManagedEvaluation(
 				"type": "file_id",
 				"id":   registeredDataset.ID,
 			},
-			"input_messages": map[string]any{
-				"type": "template",
-				"template": []map[string]any{
-					{
-						"type": "message",
-						"role": "user",
-						"content": map[string]string{
-							"type": "input_text",
-							"text": fmt.Sprintf(
-								"{{item.%s}}",
-								options.Config.Dataset.Fields.Query,
-							),
-						},
-					},
-				},
-			},
+			"input_messages": buildTargetInputMessages(
+				options.Config.Target.SystemPrompt,
+				options.Config.Dataset.Fields.Query,
+			),
 			"target": map[string]any{
 				"type":  "azure_ai_model",
 				"model": targetModel,
@@ -230,13 +233,15 @@ func executeManagedEvaluation(
 	if options.Config.Remote.NoWait {
 		return writeManagedEvaluationResult(
 			options,
+			client.endpoint,
+			targetModel,
+			judgeModel,
+			registeredDataset,
 			evaluation.ID,
-			registeredDataset.ID,
 			run,
 			nil,
 			nil,
 			nil,
-			evaluationResultStateSubmitted,
 		)
 	}
 
@@ -285,13 +290,15 @@ func executeManagedEvaluation(
 	}
 	result, err := writeManagedEvaluationResult(
 		options,
+		client.endpoint,
+		targetModel,
+		judgeModel,
+		registeredDataset,
 		evaluation.ID,
-		registeredDataset.ID,
 		run,
 		rawOutputItems,
 		summary,
 		gate,
-		evaluationResultStateCompleted,
 	)
 	if err != nil {
 		return nil, err
@@ -308,6 +315,32 @@ func executeManagedEvaluation(
 		return result, fmt.Errorf("evaluation quality gate failed; review the summary and Foundry report")
 	}
 	return result, nil
+}
+
+func buildTargetInputMessages(systemPrompt, queryField string) map[string]any {
+	template := make([]map[string]any, 0, 2)
+	if systemPrompt = strings.TrimSpace(systemPrompt); systemPrompt != "" {
+		template = append(template, map[string]any{
+			"type": "message",
+			"role": "system",
+			"content": map[string]string{
+				"type": "input_text",
+				"text": systemPrompt,
+			},
+		})
+	}
+	template = append(template, map[string]any{
+		"type": "message",
+		"role": "user",
+		"content": map[string]string{
+			"type": "input_text",
+			"text": fmt.Sprintf("{{item.%s}}", queryField),
+		},
+	})
+	return map[string]any{
+		"type":     "template",
+		"template": template,
+	}
 }
 
 func loadEvaluationDataset(
@@ -377,6 +410,8 @@ func registerEvaluationDataset(
 			if dataset.ID == "" {
 				return nil, fmt.Errorf("existing dataset version did not return an ID")
 			}
+			dataset.Name = defaultString(dataset.Name, config.Name)
+			dataset.Version = defaultString(dataset.Version, datasetVersion)
 			return dataset, nil
 		}
 		if responseError, ok := errors.AsType[*azcore.ResponseError](err); !ok ||
@@ -413,6 +448,8 @@ func registerEvaluationDataset(
 	if dataset.ID == "" {
 		return nil, fmt.Errorf("Foundry registered the dataset without returning an ID")
 	}
+	dataset.Name = defaultString(dataset.Name, config.Name)
+	dataset.Version = defaultString(dataset.Version, datasetVersion)
 	return dataset, nil
 }
 
@@ -592,13 +629,15 @@ func formatEvaluationSummary(
 
 func writeManagedEvaluationResult(
 	options managedEvaluationOptions,
+	projectEndpoint string,
+	targetDeployment string,
+	judgeDeployment string,
+	dataset *foundryDataset,
 	evaluationID string,
-	datasetID string,
 	run *foundryEvaluationRun,
 	outputItems []json.RawMessage,
 	summary map[string]*evaluationSummaryCounts,
 	gate *evaluationGateResult,
-	state string,
 ) (*evaluationRunResult, error) {
 	if err := os.MkdirAll(options.OutputPath, 0o750); err != nil {
 		return nil, fmt.Errorf("creating evaluation results directory: %w", err)
@@ -609,7 +648,7 @@ func writeManagedEvaluationResult(
 	)
 	payload := map[string]any{
 		"mode":          "remote",
-		"dataset_id":    datasetID,
+		"dataset_id":    dataset.ID,
 		"evaluation_id": evaluationID,
 		"run":           run.Document,
 	}
@@ -637,11 +676,21 @@ func writeManagedEvaluationResult(
 	if summary != nil && gate != nil {
 		summaryText = formatEvaluationSummary(summary, gate, options.Config.Evaluators)
 	}
+	status := defaultString(run.Status, "submitted")
 	result := &evaluationRunResult{
-		State:       state,
-		ReportURL:   reportURL,
-		ResultPath:  absoluteResultPath,
-		SummaryText: summaryText,
+		SchemaVersion:    evaluationOutputSchemaVersion,
+		ExtensionVersion: version.Version,
+		ProjectEndpoint:  projectEndpoint,
+		TargetDeployment: targetDeployment,
+		JudgeDeployment:  judgeDeployment,
+		DatasetName:      dataset.Name,
+		DatasetVersion:   dataset.Version,
+		EvaluationID:     evaluationID,
+		RunID:            run.ID,
+		Status:           status,
+		ReportURL:        reportURL,
+		ResultPath:       absoluteResultPath,
+		SummaryText:      summaryText,
 	}
 	if err := writeEvaluationJSON(options.ResultMetadata, result); err != nil {
 		return nil, err

@@ -25,6 +25,9 @@ dataset:
     groundTruth: expected
 target:
   model: ${FOUNDRY_MODEL_NAME}
+  systemPrompt: |
+    You are a concise technical assistant.
+    Use one sentence.
 evaluators:
   - name: relevance
     id: builtin.relevance
@@ -53,6 +56,11 @@ func TestLoadEvaluationConfig(t *testing.T) {
 	assert.Equal(t, 1.0, *config.Target.Sampling.TopP)
 	require.NotNil(t, config.Target.Sampling.MaxCompletionTokens)
 	assert.Equal(t, 2048, *config.Target.Sampling.MaxCompletionTokens)
+	assert.Equal(
+		t,
+		"You are a concise technical assistant.\nUse one sentence.\n",
+		config.Target.SystemPrompt,
+	)
 	assert.Equal(t, "increase", config.Evaluators[0].Direction)
 	datasetPath, outputPath, err := config.resolvePaths(configPath)
 	require.NoError(t, err)

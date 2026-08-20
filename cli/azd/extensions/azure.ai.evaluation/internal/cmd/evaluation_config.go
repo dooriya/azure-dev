@@ -45,8 +45,9 @@ type evaluationDatasetFields struct {
 }
 
 type evaluationTargetConfig struct {
-	Model    string                   `yaml:"model"`
-	Sampling evaluationSamplingConfig `yaml:"sampling"`
+	Model        string                   `yaml:"model"`
+	SystemPrompt string                   `yaml:"systemPrompt"`
+	Sampling     evaluationSamplingConfig `yaml:"sampling"`
 }
 
 type evaluationSamplingConfig struct {

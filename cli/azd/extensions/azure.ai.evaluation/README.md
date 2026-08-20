@@ -19,8 +19,9 @@ azd deploy
   deployment, Application Insights, and Log Analytics.
 - Python code for local model evaluation.
 - A starter JSONL dataset.
-- `evaluation.yaml` for target/judge models, field mappings, evaluators,
-  thresholds, sampling, remote options, and quality gates.
+- `evaluation.yaml` for target/judge models, an optional target system prompt,
+  field mappings, evaluators, thresholds, sampling, remote options, and quality
+  gates.
 - `.env.example` with reusable placeholders.
 - For an existing project, a gitignored `.env` containing the selected endpoint
   and deployment so local Python works immediately.
@@ -41,6 +42,43 @@ definition, start a managed run, and wait for its result. Python is not required
 for `azd provision` or `azd deploy`. The deploy result includes a clickable
 **Evaluation report** URL, the local JSON result path, per-evaluator pass rates,
 and the quality gate result.
+
+## Stable output contract
+
+Each managed run writes a machine-readable contract to:
+
+```text
+<output.path>/azd-evaluation-output-<sanitized-service-name>-<service-hash>.json
+```
+
+The 12-character lowercase `service-hash` is derived from the original service
+name, preventing collisions after sanitization. The default scaffold writes
+`results/azd-evaluation-output-evaluation-efe77b201dc2.json`.
+Consumers such as the Microsoft Foundry skill can use this file to discover the
+run without parsing terminal output:
+
+```json
+{
+  "schemaVersion": 1,
+  "extensionVersion": "0.1.0-preview",
+  "projectEndpoint": "https://account.services.ai.azure.com/api/projects/project",
+  "targetDeployment": "target-model",
+  "judgeDeployment": "judge-model",
+  "datasetName": "sample-dataset",
+  "datasetVersion": "20260818160000000000",
+  "evaluationId": "eval_...",
+  "runId": "evalrun_...",
+  "status": "completed",
+  "reportUrl": "https://ai.azure.com/...",
+  "resultPath": "C:\\path\\to\\results\\remote-evalrun_....json"
+}
+```
+
+Consumers must check `schemaVersion` before reading other fields. A no-wait
+submission records its current Foundry status and may have an empty `reportUrl`.
+`resultPath` points to detailed diagnostic output whose shape is not part of
+this stable contract. See
+[`evaluation-output.schema.json`](schemas/evaluation-output.schema.json).
 
 The generated infrastructure connects Application Insights to the Foundry
 project. Foundry controls emission of managed model-target spans. Existing

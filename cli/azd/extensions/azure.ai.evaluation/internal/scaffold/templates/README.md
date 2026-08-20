@@ -100,11 +100,23 @@ Local results are written under `results/`.
 Edit `evaluation.yaml` to customize:
 
 - `dataset.path`, registration name/version, and query/ground-truth field names.
-- `target.model` and the separate `judge.model`.
+- `target.model`, optional `target.systemPrompt`, and the separate `judge.model`.
 - Evaluator IDs, names, thresholds, direction, and optional `dataMapping`.
 - Target sampling parameters.
 - Report-only or enforced `qualityGate` pass/error rates.
 - Remote polling, wait behavior, and output location.
+
+To evaluate prompted behavior instead of the model's default behavior:
+
+```yaml
+target:
+  model: ${FOUNDRY_MODEL_NAME}
+  systemPrompt: |
+    You are a concise technical assistant.
+```
+
+The same system prompt is applied to local requests and managed Foundry runs.
+Omit it or set it to an empty string to preserve the model's default behavior.
 
 The starter profile uses relevance, coherence, and F1. F1 is a lexical baseline
 and can fail correct paraphrases; use the Foundry report and AI-assisted
@@ -127,6 +139,41 @@ The remote run uploads `data/evaluation.jsonl`, creates a managed evaluation,
 waits for completion, writes the run and output items under `results/`, and
 returns a clickable **Evaluation report** URL plus the local JSON result path in
 the `azd deploy` output.
+
+## Automation output
+
+Each managed run writes a stable machine-readable contract to:
+
+```text
+<output.path>/azd-evaluation-output-<sanitized-service-name>-<service-hash>.json
+```
+
+The 12-character lowercase `service-hash` is derived from the original service
+name, preventing collisions after sanitization. For this scaffold, the default
+path is `results/azd-evaluation-output-evaluation-efe77b201dc2.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "extensionVersion": "0.1.0-preview",
+  "projectEndpoint": "https://account.services.ai.azure.com/api/projects/project",
+  "targetDeployment": "target-model",
+  "judgeDeployment": "judge-model",
+  "datasetName": "{{.ProjectName}}-dataset",
+  "datasetVersion": "20260818160000000000",
+  "evaluationId": "eval_...",
+  "runId": "evalrun_...",
+  "status": "completed",
+  "reportUrl": "https://ai.azure.com/...",
+  "resultPath": "C:\\path\\to\\results\\remote-evalrun_....json"
+}
+```
+
+Automation must check `schemaVersion` before reading other fields. For a no-wait
+submission, `status` contains the current Foundry status and `reportUrl` may be
+empty. `resultPath` points to detailed diagnostic output and is not itself a
+stable schema. The contract schema is
+[`evaluation-output.schema.json`](https://raw.githubusercontent.com/Azure/azure-dev/main/cli/azd/extensions/azure.ai.evaluation/schemas/evaluation-output.schema.json).
 
 `dataset.version: auto` in `evaluation.yaml` creates a timestamped dataset
 version on each deployment. Set an explicit version when you want deployments

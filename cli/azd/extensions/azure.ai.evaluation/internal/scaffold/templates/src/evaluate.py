@@ -178,10 +178,12 @@ def load_configuration(path: Path) -> dict[str, Any]:
         path,
         "target",
         config["target"],
-        allowed={"model", "sampling"},
+        allowed={"model", "systemPrompt", "sampling"},
         required={"model"},
     )
     validate_string(path, "target.model", target["model"], non_empty=True)
+    if "systemPrompt" in target:
+        validate_string(path, "target.systemPrompt", target["systemPrompt"])
     if "sampling" in target:
         sampling = validate_object(
             path,
@@ -493,7 +495,20 @@ def configure_remote_tracing(project_client: AIProjectClient, capture_content: b
     return trace.get_tracer("azd.evaluation")
 
 
-def run_local(args: argparse.Namespace, dataset: list[EvaluationRecord], endpoint: str, model: str) -> Path:
+def local_response_request(model: str, query: str, system_prompt: str) -> dict[str, Any]:
+    request: dict[str, Any] = {"model": model, "input": query}
+    if system_prompt := system_prompt.strip():
+        request["instructions"] = system_prompt
+    return request
+
+
+def run_local(
+    args: argparse.Namespace,
+    dataset: list[EvaluationRecord],
+    endpoint: str,
+    model: str,
+    system_prompt: str,
+) -> Path:
     rows: list[dict[str, Any]] = []
     with (
         DefaultAzureCredential() as credential,
@@ -502,7 +517,9 @@ def run_local(args: argparse.Namespace, dataset: list[EvaluationRecord], endpoin
     ):
         for index, record in enumerate(dataset, start=1):
             print(f"Evaluating local row {index}/{len(dataset)}...")
-            response = openai_client.responses.create(model=model, input=record.query)
+            response = openai_client.responses.create(
+                **local_response_request(model, record.query, system_prompt)
+            )
             output_text = response.output_text.strip()
             if not output_text:
                 raise RuntimeError(f"The model returned no text for dataset row {index}.")
@@ -588,6 +605,29 @@ def remote_testing_criteria(
             criterion["initialization_parameters"] = {"model": judge_model}
         criteria.append(criterion)
     return criteria
+
+
+def target_input_messages(fields: dict[str, str], system_prompt: str) -> dict[str, Any]:
+    template: list[dict[str, Any]] = []
+    if system_prompt := system_prompt.strip():
+        template.append(
+            {
+                "type": "message",
+                "role": "system",
+                "content": {"type": "input_text", "text": system_prompt},
+            }
+        )
+    template.append(
+        {
+            "type": "message",
+            "role": "user",
+            "content": {
+                "type": "input_text",
+                "text": f"{{{{item.{fields.get('query', 'query')}}}}}",
+            },
+        }
+    )
+    return {"type": "template", "template": template}
 
 
 def summarize_remote_results(
@@ -751,6 +791,7 @@ def run_remote(
     evaluators = config.get("evaluators", [])
     quality_gate = config.get("qualityGate", {})
     sampling = config_value(config, "target", "sampling", default={})
+    system_prompt = str(config_value(config, "target", "systemPrompt", default=""))
 
     with (
         DefaultAzureCredential() as credential,
@@ -819,19 +860,7 @@ def run_remote(
                     data_source=TargetCompletionEvalRunDataSource(
                         type="azure_ai_target_completions",
                         source=SourceFileID(type="file_id", id=dataset.id),
-                        input_messages={
-                            "type": "template",
-                            "template": [
-                                {
-                                    "type": "message",
-                                    "role": "user",
-                                    "content": {
-                                        "type": "input_text",
-                                        "text": f"{{{{item.{fields.get('query', 'query')}}}}}",
-                                    },
-                                }
-                            ],
-                        },
+                        input_messages=target_input_messages(fields, system_prompt),
                         target=AzureAIModelTargetParam(
                             type="azure_ai_model",
                             model=model,
@@ -939,12 +968,13 @@ def main() -> int:
         or model
     )
     fields = config_value(config, "dataset", "fields", default={})
+    system_prompt = str(config_value(config, "target", "systemPrompt", default=""))
     dataset = load_dataset(Path(args.dataset), fields)
     if args.remote:
         run_remote(args, config, endpoint, model, judge_model, len(dataset))
     else:
         args.no_wait = False
-        run_local(args, dataset, endpoint, model)
+        run_local(args, dataset, endpoint, model, system_prompt)
     return 0
 
 
